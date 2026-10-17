@@ -209,13 +209,13 @@ services:
     environment:
       BACKEND: frappe-backend:8000
       SOCKETIO: frappe-websocket:9000
+      FRAPPE_SITE_NAME_HEADER: "$$host"
       UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
       UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
       UPSTREAM_REAL_IP_RECURSIVE: "off"
       PROXY_READ_TIMEOUT: "120"
       CLIENT_MAX_BODY_SIZE: 50m
-      # Host-based multitenancy: the backend resolves the site from the Host
-      # header, so we intentionally do NOT pin FRAPPE_SITE_NAME_HEADER.
+      # Route each incoming hostname to the matching Frappe site directory.
     ports:
       - "${FRAPPE_HTTP_PORT:-8080}:8080"
 

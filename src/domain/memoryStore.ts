@@ -192,17 +192,19 @@ export class MemoryStore implements Store {
     if (latest && (latest.status === 'queued' || latest.status === 'running')) {
       throw new DuplicateError('active_job_for_instance', instanceId);
     }
+
     const now = new Date();
     const job: ProvisioningJob = latest
       ? {
           ...latest,
           type: 'delete',
-        siteBackupId: null,
+          siteBackupId: null,
           status: 'queued',
           attempts: 0,
           maxAttempts,
           nextRunAt: now,
           lockedAt: null,
+          cleanupBeforeRun: false,
           lastError: null,
           updatedAt: now,
         }
@@ -216,6 +218,7 @@ export class MemoryStore implements Store {
           maxAttempts,
           nextRunAt: now,
           lockedAt: null,
+          cleanupBeforeRun: false,
           lastError: null,
           createdAt: now,
           updatedAt: now,
@@ -223,6 +226,32 @@ export class MemoryStore implements Store {
     this.jobs.set(job.id, job);
     this.instances.set(instanceId, { ...instance, status: 'deleting', errorMessage: null, updatedAt: now });
     return job;
+  }
+
+  async stopProvisioning(instanceId: string, error: string): Promise<boolean> {
+    const instance = this.instances.get(instanceId);
+    if (!instance || !['queued', 'provisioning', 'installing', 'configuring'].includes(instance.status)) {
+      return false;
+    }
+    const job = await this.findLatestJobForInstance(instanceId);
+    if (!job || job.type !== 'provision' || !['queued', 'running'].includes(job.status)) {
+      return false;
+    }
+    this.jobs.set(job.id, {
+      ...job,
+      status: 'failed',
+      lockedAt: null,
+      lastError: error,
+      cleanupBeforeRun: true,
+      updatedAt: new Date(),
+    });
+    this.instances.set(instanceId, {
+      ...instance,
+      status: 'failed',
+      errorMessage: error,
+      updatedAt: new Date(),
+    });
+    return true;
   }
 
   async deleteInstance(id: string): Promise<void> {
@@ -418,6 +447,7 @@ export class MemoryStore implements Store {
       maxAttempts: input.maxAttempts,
       nextRunAt: now,
       lockedAt: null,
+      cleanupBeforeRun: false,
       lastError: null,
       createdAt: now,
       updatedAt: now,
@@ -457,8 +487,20 @@ export class MemoryStore implements Store {
           status: 'failed',
           lockedAt: null,
           lastError: 'Provisioning timed out and exceeded the retry limit',
+          cleanupBeforeRun: job.type === 'provision',
           updatedAt: now,
         });
+        if (job.type === 'provision') {
+          const instance = this.instances.get(job.instanceId);
+          if (instance && ['queued', 'provisioning', 'installing', 'configuring'].includes(instance.status)) {
+            this.instances.set(instance.id, {
+              ...instance,
+              status: 'failed',
+              errorMessage: 'Provisioning timed out and exceeded the retry limit',
+              updatedAt: now,
+            });
+          }
+        }
       } else {
         this.jobs.set(job.id, {
           ...job,
@@ -466,12 +508,85 @@ export class MemoryStore implements Store {
           lockedAt: null,
           nextRunAt: now,
           lastError: 'Provisioning timed out; retrying',
+          cleanupBeforeRun: job.type === 'provision',
           updatedAt: now,
         });
+        if (job.type === 'provision') {
+          const instance = this.instances.get(job.instanceId);
+          if (instance && ['provisioning', 'installing', 'configuring'].includes(instance.status)) {
+            this.instances.set(instance.id, {
+              ...instance,
+              status: 'queued',
+              errorMessage: 'Provisioning timed out; retrying',
+              updatedAt: now,
+            });
+          }
+        }
       }
       recovered += 1;
     }
     return recovered;
+  }
+
+  async completeProvisioningJob(
+    jobId: string,
+    instanceId: string,
+    claim: { attempts: number; lockedAt: Date },
+  ): Promise<boolean> {
+    const job = this.jobs.get(jobId);
+    const instance = this.instances.get(instanceId);
+    if (
+      !job || job.type !== 'provision' || job.status !== 'running' || !instance ||
+      job.attempts !== claim.attempts || job.lockedAt?.getTime() !== claim.lockedAt.getTime()
+    ) return false;
+    this.jobs.set(jobId, {
+      ...job,
+      status: 'succeeded',
+      lockedAt: null,
+      lastError: null,
+      cleanupBeforeRun: false,
+      updatedAt: new Date(),
+    });
+    this.instances.set(instanceId, {
+      ...instance,
+      status: 'ready',
+      errorMessage: null,
+      updatedAt: new Date(),
+    });
+    return true;
+  }
+
+  async recordProvisioningFailure(
+    jobId: string,
+    instanceId: string,
+    claim: { attempts: number; lockedAt: Date },
+    exhausted: boolean,
+    nextRunAt: Date,
+    error: string,
+  ): Promise<boolean> {
+    const job = this.jobs.get(jobId);
+    const instance = this.instances.get(instanceId);
+    if (
+      !job || job.type !== 'provision' || job.status !== 'running' || !instance ||
+      job.attempts !== claim.attempts || job.lockedAt?.getTime() !== claim.lockedAt.getTime()
+    ) return false;
+    const now = new Date();
+    this.jobs.set(jobId, {
+      ...job,
+      status: exhausted ? 'failed' : 'queued',
+      lockedAt: null,
+      nextRunAt: exhausted ? job.nextRunAt : nextRunAt,
+      cleanupBeforeRun: true,
+      lastError: error,
+      updatedAt: now,
+    });
+    this.instances.set(instanceId, {
+      ...instance,
+      status: exhausted ? 'failed' : 'queued',
+      errorMessage: error,
+      updatedAt: now,
+    });
+    return true;
   }
 
   async completeJob(id: string): Promise<ProvisioningJob> {
@@ -528,6 +643,7 @@ export class MemoryStore implements Store {
       nextRunAt: now,
       lockedAt: null,
       lastError: null,
+      cleanupBeforeRun: true,
     });
   }
 

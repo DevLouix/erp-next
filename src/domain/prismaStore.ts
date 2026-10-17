@@ -62,6 +62,7 @@ function toJob(row: {
   maxAttempts: number;
   nextRunAt: Date;
   lockedAt: Date | null;
+  cleanupBeforeRun: boolean;
   lastError: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -302,6 +303,7 @@ export class PrismaStore implements Store {
               maxAttempts,
               nextRunAt: now,
               lockedAt: null,
+              cleanupBeforeRun: false,
               lastError: null,
               siteBackupId: null,
             },
@@ -314,6 +316,42 @@ export class PrismaStore implements Store {
         data: { status: 'deleting', errorMessage: null },
       });
       return toJob(job);
+    });
+  }
+
+  async stopProvisioning(instanceId: string, error: string): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const instance = await tx.instance.findUnique({ where: { id: instanceId } });
+      if (!instance || !['queued', 'provisioning', 'installing', 'configuring'].includes(instance.status)) {
+        return false;
+      }
+      const latestJob = await tx.provisioningJob.findFirst({
+        where: { instanceId, type: 'provision' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
+      if (!latestJob || !['queued', 'running'].includes(latestJob.status)) return false;
+      const stopped = await tx.provisioningJob.updateMany({
+        where: {
+          id: latestJob.id,
+          type: 'provision',
+          status: { in: ['queued', 'running'] },
+        },
+        data: {
+          status: 'failed',
+          lockedAt: null,
+          cleanupBeforeRun: true,
+          lastError: error,
+        },
+      });
+      if (stopped.count === 0) return false;
+      await tx.instance.updateMany({
+        where: {
+          id: instanceId,
+          status: { in: ['queued', 'provisioning', 'installing', 'configuring'] },
+        },
+        data: { status: 'failed', errorMessage: error },
+      });
+      return true;
     });
   }
 
@@ -598,20 +636,107 @@ export class PrismaStore implements Store {
     let recovered = 0;
     for (const job of stale) {
       const exhausted = job.attempts >= job.maxAttempts;
-      await this.prisma.provisioningJob.update({
-        where: { id: job.id },
+      const message = exhausted
+        ? 'Provisioning timed out and exceeded the retry limit'
+        : 'Provisioning timed out; retrying';
+      const updated = await this.prisma.$transaction(async (tx) => {
+        const changed = await tx.provisioningJob.updateMany({
+          where: { id: job.id, status: 'running', lockedAt: { lt: cutoff } },
+          data: {
+            status: exhausted ? 'failed' : 'queued',
+            lockedAt: null,
+            nextRunAt: exhausted ? job.nextRunAt : now,
+            cleanupBeforeRun: job.type === 'provision',
+            lastError: message,
+          },
+        });
+        if (changed.count === 0) return false;
+        if (job.type === 'provision') {
+          await tx.instance.updateMany({
+            where: {
+              id: job.instanceId,
+              status: { in: ['queued', 'provisioning', 'installing', 'configuring'] },
+            },
+            data: {
+              status: exhausted ? 'failed' : 'queued',
+              errorMessage: message,
+            },
+          });
+        }
+        return true;
+      });
+      if (updated) recovered += 1;
+    }
+    return recovered;
+  }
+
+  async completeProvisioningJob(
+    jobId: string,
+    instanceId: string,
+    claim: { attempts: number; lockedAt: Date },
+  ): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const completed = await tx.provisioningJob.updateMany({
+        where: {
+          id: jobId,
+          instanceId,
+          type: 'provision',
+          status: 'running',
+          attempts: claim.attempts,
+          lockedAt: claim.lockedAt,
+        },
+        data: {
+          status: 'succeeded',
+          lockedAt: null,
+          cleanupBeforeRun: false,
+          lastError: null,
+        },
+      });
+      if (completed.count === 0) return false;
+      await tx.instance.update({
+        where: { id: instanceId },
+        data: { status: 'ready', errorMessage: null },
+      });
+      return true;
+    });
+  }
+
+  async recordProvisioningFailure(
+    jobId: string,
+    instanceId: string,
+    claim: { attempts: number; lockedAt: Date },
+    exhausted: boolean,
+    nextRunAt: Date,
+    error: string,
+  ): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const failed = await tx.provisioningJob.updateMany({
+        where: {
+          id: jobId,
+          instanceId,
+          type: 'provision',
+          status: 'running',
+          attempts: claim.attempts,
+          lockedAt: claim.lockedAt,
+        },
         data: {
           status: exhausted ? 'failed' : 'queued',
           lockedAt: null,
-          nextRunAt: exhausted ? job.nextRunAt : now,
-          lastError: exhausted
-            ? 'Provisioning timed out and exceeded the retry limit'
-            : 'Provisioning timed out; retrying',
+          nextRunAt: exhausted ? undefined : nextRunAt,
+          cleanupBeforeRun: true,
+          lastError: error,
         },
       });
-      recovered += 1;
-    }
-    return recovered;
+      if (failed.count === 0) return false;
+      await tx.instance.update({
+        where: { id: instanceId },
+        data: {
+          status: exhausted ? 'failed' : 'queued',
+          errorMessage: error,
+        },
+      });
+      return true;
+    });
   }
 
   async completeJob(id: string): Promise<ProvisioningJob> {
@@ -669,6 +794,7 @@ export class PrismaStore implements Store {
         maxAttempts,
         nextRunAt: now,
         lockedAt: null,
+        cleanupBeforeRun: true,
         lastError: null,
         siteBackupId: null,
       },

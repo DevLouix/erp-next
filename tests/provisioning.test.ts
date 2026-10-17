@@ -356,6 +356,117 @@ describe('worker recovery', () => {
     expect(recovered).toBe(1);
     const job = await store.findLatestJobForInstance(instance.id);
     expect(job?.status).toBe('queued');
+    expect(job?.cleanupBeforeRun).toBe(true);
+    expect((await store.findInstanceById(instance.id))?.status).toBe('queued');
+  });
+
+  it('scans and processes queued work immediately when the worker starts', async () => {
+    const instance = await seed();
+    const bench = new FakeBench();
+    let worker: ProvisioningWorker;
+    const originalNewSite = bench.newSite.bind(bench);
+    bench.newSite = async (siteName) => {
+      await originalNewSite(siteName);
+      worker.stop();
+    };
+    worker = makeWorker(bench);
+
+    await worker.start();
+
+    expect((await store.findInstanceById(instance.id))?.status).toBe('ready');
+    expect((await store.findLatestJobForInstance(instance.id))?.status).toBe('succeeded');
+  });
+
+  it('recovers and processes an interrupted job during worker startup', async () => {
+    const instance = await seed();
+    await store.claimNextJob(new Date());
+    const bench = new FakeBench();
+    let worker: ProvisioningWorker;
+    const originalNewSite = bench.newSite.bind(bench);
+    bench.newSite = async (siteName) => {
+      await originalNewSite(siteName);
+      worker.stop();
+    };
+    worker = new ProvisioningWorker({
+      store,
+      config: { ...config, PROVISION_LOCK_TIMEOUT_MS: 1_000 },
+      bench,
+      health: new FakeHealth(),
+      logger: silentLogger,
+      now: () => new Date(Date.now() + 10_000),
+    });
+
+    await worker.start();
+
+    expect((await store.findInstanceById(instance.id))?.status).toBe('ready');
+    expect((await store.findLatestJobForInstance(instance.id))?.attempts).toBe(2);
+  });
+
+  it('marks an exhausted stale provisioning instance failed', async () => {
+    const instance = await seed();
+    await store.resetJobForRetry(instance.id, 1);
+    await store.claimNextJob(new Date());
+
+    expect(await store.recoverStaleJobs(new Date(Date.now() + 10_000), 1_000)).toBe(1);
+    expect((await store.findLatestJobForInstance(instance.id))?.status).toBe('failed');
+    expect((await store.findInstanceById(instance.id))?.status).toBe('failed');
+  });
+
+  it('fences an old worker attempt after its stale job has been reclaimed', async () => {
+    const instance = await seed();
+    const firstClaim = await store.claimNextJob(new Date());
+    if (!firstClaim?.lockedAt) throw new Error('Expected first worker claim');
+    const recoveredAt = new Date(Date.now() + 10_000);
+    expect(await store.recoverStaleJobs(recoveredAt, 1_000)).toBe(1);
+    const secondClaim = await store.claimNextJob(recoveredAt);
+    if (!secondClaim?.lockedAt) throw new Error('Expected recovered worker claim');
+
+    expect(await store.completeProvisioningJob(firstClaim.id, instance.id, {
+      attempts: firstClaim.attempts,
+      lockedAt: firstClaim.lockedAt,
+    })).toBe(false);
+    expect((await store.findInstanceById(instance.id))?.status).toBe('queued');
+    expect(await store.completeProvisioningJob(secondClaim.id, instance.id, {
+      attempts: secondClaim.attempts,
+      lockedAt: secondClaim.lockedAt,
+    })).toBe(true);
+    expect((await store.findInstanceById(instance.id))?.status).toBe('ready');
+  });
+
+  it('does not continue provisioning after the active job is stopped', async () => {
+    const instance = await seed();
+    const job = await store.claimNextJob(new Date());
+    expect(job).not.toBeNull();
+    const bench = new FakeBench();
+    const originalNewSite = bench.newSite.bind(bench);
+    bench.newSite = async (siteName) => {
+      await originalNewSite(siteName);
+      expect(await store.stopProvisioning(instance.id, 'Provisioning stopped manually')).toBe(true);
+    };
+
+    const outcome = await makeWorker(bench).processJob(job!);
+
+    expect(outcome).toBe('skipped');
+    expect(bench.calls.map((call) => call.op)).toEqual(['new-site']);
+    expect((await store.findInstanceById(instance.id))?.status).toBe('failed');
+    expect((await store.findLatestJobForInstance(instance.id))?.status).toBe('failed');
+  });
+
+  it('cleans up an interrupted site before an explicit retry', async () => {
+    const instance = await seed();
+    const firstClaim = await store.claimNextJob(new Date());
+    if (!firstClaim) throw new Error('Expected provisioning job claim');
+    expect(await store.stopProvisioning(instance.id, 'Provisioning stopped manually')).toBe(true);
+    await service.retry(owner, instance.id);
+
+    const retryJob = await store.claimNextJob(new Date());
+    if (!retryJob) throw new Error('Expected retried provisioning job claim');
+    expect(retryJob.cleanupBeforeRun).toBe(true);
+    const bench = new FakeBench();
+    const outcome = await makeWorker(bench).processJob(retryJob);
+
+    expect(outcome).toBe('ready');
+    expect(bench.calls.map((call) => call.op).slice(0, 2)).toEqual(['drop-site', 'new-site']);
   });
 
   it('computes exponential backoff with a ceiling', () => {

@@ -76,6 +76,13 @@ export function registerInstanceRoutes(
     reply.code(202).send({ instance: serializeInstance(instance, config) });
   });
 
+  app.post('/api/instances/:id/stop-provisioning', { preHandler: requireAuth }, async (request, reply) => {
+    const { user } = getAuth(request);
+    const { id } = request.params as { id: string };
+    const instance = await instanceService.stopProvisioning(user, id);
+    reply.code(202).send({ instance: serializeInstance(instance, config) });
+  });
+
   app.get('/api/instances/:id/backups', { preHandler: requireAuth }, async (request, reply) => {
     const { user } = getAuth(request);
     const { id } = request.params as { id: string };

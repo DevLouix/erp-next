@@ -61,6 +61,7 @@ export interface Store {
     patch: Partial<{ companyName: string; status: InstanceStatus; errorMessage: string | null }>,
   ): Promise<Instance>;
   queueInstanceDeletion(instanceId: string, maxAttempts: number): Promise<ProvisioningJob>;
+  stopProvisioning(instanceId: string, error: string): Promise<boolean>;
   deleteInstance(id: string): Promise<void>;
   queueSiteBackup(instance: Instance, actorUserId: string, maxAttempts: number): Promise<SiteBackup>;
   createSiteBackupRecord(
@@ -99,6 +100,19 @@ export interface Store {
   createJob(input: CreateJobInput): Promise<ProvisioningJob>;
   claimNextJob(now: Date): Promise<ProvisioningJob | null>;
   recoverStaleJobs(now: Date, lockTimeoutMs: number): Promise<number>;
+  completeProvisioningJob(
+    jobId: string,
+    instanceId: string,
+    claim: { attempts: number; lockedAt: Date },
+  ): Promise<boolean>;
+  recordProvisioningFailure(
+    jobId: string,
+    instanceId: string,
+    claim: { attempts: number; lockedAt: Date },
+    exhausted: boolean,
+    nextRunAt: Date,
+    error: string,
+  ): Promise<boolean>;
   completeJob(id: string): Promise<ProvisioningJob>;
   rescheduleJob(id: string, nextRunAt: Date, error: string | null): Promise<ProvisioningJob>;
   failJob(id: string, error: string): Promise<ProvisioningJob>;

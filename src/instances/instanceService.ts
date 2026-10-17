@@ -179,4 +179,23 @@ export class InstanceService {
     });
     return updated;
   }
+
+  async stopProvisioning(actor: User, instanceId: string): Promise<Instance> {
+    const instance = await this.getFor(actor, instanceId);
+    const stopped = await this.store.stopProvisioning(
+      instanceId,
+      'Provisioning stopped manually',
+    );
+    if (!stopped) {
+      throw new ValidationError('This instance has no active provisioning job to stop');
+    }
+    await this.store.recordAudit({
+      actorUserId: actor.id,
+      action: 'instance.provisioning_stopped',
+      targetType: 'instance',
+      targetId: instanceId,
+      metadata: { hostname: instance.hostname },
+    });
+    return (await this.store.findInstanceById(instanceId)) ?? instance;
+  }
 }

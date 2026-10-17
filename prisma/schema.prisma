@@ -59,6 +59,7 @@ model ProvisioningJob {
   maxAttempts Int       @default(5) @map("max_attempts")
   nextRunAt   DateTime  @default(now()) @map("next_run_at")
   lockedAt    DateTime? @map("locked_at")
+  cleanupBeforeRun Boolean @default(false) @map("cleanup_before_run")
   lastError   String?   @map("last_error")
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")

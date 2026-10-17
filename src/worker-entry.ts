@@ -34,16 +34,15 @@ async function main(): Promise<void> {
 
   const worker = new ProvisioningWorker({ store, config, bench, health, logger: consoleLogger });
 
-  const shutdown = async (signal: string) => {
+  const shutdown = (signal: string) => {
     consoleLogger.info({ signal }, 'stopping worker');
     worker.stop();
-    await disconnectPrisma();
-    process.exit(0);
   };
-  process.on('SIGTERM', () => void shutdown('SIGTERM'));
-  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
 
   await worker.start();
+  await disconnectPrisma();
 }
 
 main().catch((err) => {

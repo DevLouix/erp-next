@@ -1,0 +1,266 @@
+# Everything in one stack: the ERPNext/Frappe Bench plus the hosting platform.
+#
+#   docker compose up -d --build
+#
+# The Frappe services below follow the official frappe_docker `pwd.yml`
+# (https://github.com/frappe/frappe_docker). Pin ERPNEXT_VERSION to the version
+# you deploy. The platform (postgres/api/worker) is added on top; the worker is
+# built FROM the same ERPNext image so it can run `bench` against the shared
+# `sites` volume.
+#
+# Values such as PUBLIC_BASE_URL, TRUEMOI_*, SESSION_COOKIE_SECRET and
+# PROVISIONING_BASE_DOMAIN are read from the project `.env` (see .env.example).
+
+x-frappe-common: &frappe-common
+  image: frappe/erpnext:${ERPNEXT_VERSION:-v16.51.1}
+  networks: [frappe]
+  restart: unless-stopped
+  volumes:
+    - sites:/home/frappe/frappe-bench/sites
+    - logs:/home/frappe/frappe-bench/logs
+
+services:
+  # ── Platform ────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    networks: [frappe]
+    environment:
+      POSTGRES_USER: erpnext
+      POSTGRES_PASSWORD: ${PLATFORM_DB_PASSWORD:-erpnext}
+      POSTGRES_DB: erpnext_platform
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      # Published for local `pnpm dev` (DATABASE_URL uses localhost). Change the
+      # host side if something else already owns 5432.
+      - "${PLATFORM_DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U erpnext -d erpnext_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  platform-api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    restart: unless-stopped
+    networks: [frappe]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://erpnext:${PLATFORM_DB_PASSWORD:-erpnext}@postgres:5432/erpnext_platform
+    ports:
+      # Host port is configurable so this stack can coexist with other
+      # containers; the in-container port stays fixed at 3000.
+      - "${PLATFORM_API_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  platform-worker:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+      args:
+        ERPNEXT_VERSION: ${ERPNEXT_VERSION:-v16.51.1}
+    restart: unless-stopped
+    networks: [frappe]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://erpnext:${PLATFORM_DB_PASSWORD:-erpnext}@postgres:5432/erpnext_platform
+      BENCH_PATH: /home/frappe/frappe-bench
+      BENCH_BIN: bench
+      MARIADB_HOST: db
+      PROVISION_ROUTING_MODE: ${PROVISION_ROUTING_MODE:-best-effort}
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      configurator:
+        condition: service_completed_successfully
+
+  # ── Frappe Bench (adapted from frappe_docker pwd.yml) ───────────────────
+  backend:
+    <<: *frappe-common
+    environment:
+      DB_HOST: db
+      DB_PORT: "3306"
+      MYSQL_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-admin}
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-admin}
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+
+  configurator:
+    <<: *frappe-common
+    restart: "no"
+    entrypoint: [bash, -c]
+    command:
+      - >
+        ls -1 apps > sites/apps.txt;
+        bench set-config -g db_host $$DB_HOST;
+        bench set-config -gp db_port $$DB_PORT;
+        bench set-config -g db_root_password "$$MARIADB_ROOT_PASSWORD";
+        bench set-config -g redis_cache "redis://$$REDIS_CACHE";
+        bench set-config -g redis_queue "redis://$$REDIS_QUEUE";
+        bench set-config -g redis_socketio "redis://$$REDIS_QUEUE";
+        bench set-config -gp socketio_port $$SOCKETIO_PORT;
+    environment:
+      DB_HOST: db
+      DB_PORT: "3306"
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-admin}
+      REDIS_CACHE: redis-cache:6379
+      REDIS_QUEUE: redis-queue:6379
+      SOCKETIO_PORT: "9000"
+
+  create-site:
+    <<: *frappe-common
+    restart: "no"
+    entrypoint: [bash, -c]
+    command:
+      - >
+        wait-for-it -t 120 db:3306;
+        wait-for-it -t 120 redis-cache:6379;
+        wait-for-it -t 120 redis-queue:6379;
+        export start=`date +%s`;
+        until [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".db_host // empty"` ]] && \
+          [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".redis_cache // empty"` ]] && \
+          [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".redis_queue // empty"` ]];
+        do
+          echo "Waiting for sites/common_site_config.json to be created";
+          sleep 5;
+          if (( `date +%s`-start > 120 )); then
+            echo "could not find sites/common_site_config.json with required keys";
+            exit 1
+          fi
+        done;
+        echo "sites/common_site_config.json found";
+        if [ -d "sites/${BOOTSTRAP_SITE:-frontend}" ]; then
+          echo "Site ${BOOTSTRAP_SITE:-frontend} already exists, skipping creation";
+        else
+          bench new-site --mariadb-user-host-login-scope='%'
+            --admin-password=$$ERPNEXT_ADMIN_PASSWORD
+            --mariadb-root-password=$$MARIADB_ROOT_PASSWORD
+            --install-app erpnext
+            --set-default ${BOOTSTRAP_SITE:-frontend};
+        fi;
+    environment:
+      BOOTSTRAP_SITE: ${BOOTSTRAP_SITE:-frontend}
+      ERPNEXT_ADMIN_PASSWORD: ${ERPNEXT_ADMIN_PASSWORD:-admin}
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-admin}
+
+  db:
+    image: mariadb:11.8
+    restart: unless-stopped
+    networks: [frappe]
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-admin}
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-admin}
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 5s
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  frontend:
+    <<: *frappe-common
+    depends_on: [backend, websocket]
+    command: [nginx-entrypoint.sh]
+    environment:
+      BACKEND: backend:8000
+      SOCKETIO: websocket:9000
+      UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
+      UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
+      UPSTREAM_REAL_IP_RECURSIVE: "off"
+      PROXY_READ_TIMEOUT: "120"
+      CLIENT_MAX_BODY_SIZE: 50m
+      # Host-based multitenancy: the backend resolves the site from the Host
+      # header, so we intentionally do NOT pin FRAPPE_SITE_NAME_HEADER.
+    ports:
+      - "${FRAPPE_HTTP_PORT:-8080}:8080"
+
+  queue-long:
+    <<: *frappe-common
+    command: [bench, worker, --queue, long,default,short]
+    environment:
+      FRAPPE_REDIS_CACHE: redis://redis-cache:6379
+      FRAPPE_REDIS_QUEUE: redis://redis-queue:6379
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+
+  queue-short:
+    <<: *frappe-common
+    command: [bench, worker, --queue, short,default]
+    environment:
+      FRAPPE_REDIS_CACHE: redis://redis-cache:6379
+      FRAPPE_REDIS_QUEUE: redis://redis-queue:6379
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+
+  scheduler:
+    <<: *frappe-common
+    command: [bench, schedule]
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+
+  websocket:
+    <<: *frappe-common
+    command: [node, /home/frappe/frappe-bench/apps/frappe/socketio.js]
+    environment:
+      FRAPPE_REDIS_CACHE: redis://redis-cache:6379
+      FRAPPE_REDIS_QUEUE: redis://redis-queue:6379
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+
+  redis-cache:
+    image: redis:6.2-alpine
+    restart: unless-stopped
+    networks: [frappe]
+
+  redis-queue:
+    image: redis:6.2-alpine
+    restart: unless-stopped
+    networks: [frappe]
+    volumes:
+      - redis-queue-data:/data
+
+  # Test-only PostgreSQL for the opt-in integration test (host port 5433).
+  postgres-test:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    networks: [frappe]
+    environment:
+      POSTGRES_USER: erpnext
+      POSTGRES_PASSWORD: erpnext
+      POSTGRES_DB: erpnext_platform_test
+    ports:
+      - "${PLATFORM_TEST_DB_PORT:-5433}:5432"
+
+volumes:
+  db-data:
+  redis-queue-data:
+  sites:
+  logs:
+  postgres-data:
+
+networks:
+  frappe:
+    driver: bridge

@@ -211,8 +211,8 @@ no password-based auth in the platform.
   (`TRUEMOI_ADMIN_ROLES`) and the `ADMIN_EMAILS` allow-list. A role granted
   manually in the platform database is preserved unless Truemoi explicitly grants
   admin — so operator promotions stick, but a revoked Truemoi admin is demoted.
-- Admins can: list all users/instances, retry a failed provisioning job, change a
-  user's role, disable/enable a user (disabling revokes all their sessions
+- Admins can: list all users/instances, stop active provisioning, retry a failed
+  provisioning job, change a user's role, disable/enable a user (disabling revokes all their sessions
   immediately), and read the audit log.
 - Users can only ever see and manage their own instances. Cross-customer access
   returns **404** (not 403) so instance existence is not disclosed.
@@ -231,11 +231,24 @@ Permanent deletion transitions through `deleting`.
   `bench --site <s> set-config host_name https://<hostname>` →
   optional `bench setup nginx` for deployments where Bench owns nginx →
   health check (`/api/method/ping`). In Compose the worker checks
-  `http://frappe-frontend:8080` with the site hostname as the HTTP `Host` header.
-  Only a passing health check marks the site `ready`.
+  `http://frappe-frontend:8080` with the site hostname as the HTTP `Host` header;
+  the frontend routes that hostname to the matching site via
+  `FRAPPE_SITE_NAME_HEADER=$host`. The internal check uses Node's HTTP client
+  because Fetch forbids overriding the `Host` header; without the tenant host,
+  Frappe returns 404 for an unknown site. Only a passing health check marks the
+  site `ready`.
+- Provisioning jobs are persisted in PostgreSQL. The worker scans and claims due
+  queued jobs immediately at startup and on every poll, so a platform or worker
+  restart does not discard pending work. A running job whose lock is older than
+  `PROVISION_LOCK_TIMEOUT_MS` is recovered: it is retried if attempts remain, or
+  marked failed (including the instance status) when attempts are exhausted.
+- Owners and admins can stop an active provisioning job from the instance page
+  (admins can also stop from the admin instance list). Stop marks the job failed
+  and prevents its worker from advancing the instance to ready. Any partial
+  setup is left for a subsequent retry to clean up; stopping does not delete a
+  ready site or its customer data.
 - Failures record a **redacted** error, clean up the partial site, and retry with
-  exponential backoff up to `PROVISION_MAX_ATTEMPTS`. Stale/locked jobs (worker
-  crash) are recovered on the next loop. Duplicate requests are prevented by
+  exponential backoff up to `PROVISION_MAX_ATTEMPTS`. Duplicate requests are prevented by
   unique `site_name`/`hostname`, a per-owner `Idempotency-Key`, and one active job
   per instance.
 

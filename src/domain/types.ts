@@ -59,6 +59,7 @@ export interface ProvisioningJob {
   maxAttempts: number;
   nextRunAt: Date;
   lockedAt: Date | null;
+  cleanupBeforeRun: boolean;
   lastError: string | null;
   createdAt: Date;
   updatedAt: Date;

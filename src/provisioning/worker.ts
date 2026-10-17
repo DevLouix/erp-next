@@ -91,6 +91,18 @@ export class ProvisioningWorker {
     this.running = true;
     this.stopping = false;
     this.logger.info({}, 'provisioning worker started');
+    try {
+      const recovered = await this.deps.store.recoverStaleJobs(
+        this.now(),
+        this.deps.config.PROVISION_LOCK_TIMEOUT_MS,
+      );
+      this.logger.info({ recovered }, 'startup job recovery completed');
+    } catch (err) {
+      this.logger.error(
+        { error: err instanceof Error ? err.message : String(err) },
+        'startup job recovery failed; normal polling will continue',
+      );
+    }
     while (!this.stopping) {
       let didWork = false;
       try {
@@ -132,31 +144,36 @@ export class ProvisioningWorker {
 
     const log = { jobId: job.id, instanceId: instance.id, hostname: instance.hostname, attempt: job.attempts };
     this.logger.info(log, 'provisioning instance');
+    if (!job.lockedAt || !(await this.isJobRunning(job))) return 'skipped';
+    const claim = { attempts: job.attempts, lockedAt: job.lockedAt };
 
     try {
       // On a retry, remove whatever a previous attempt may have left behind so
       // `bench new-site` starts clean. Best-effort: a missing site is fine.
-      if (job.attempts > 1) {
+      if (job.attempts > 1 || job.cleanupBeforeRun) {
         await this.safeDrop(instance);
       }
 
       await this.setStatus(instance, 'provisioning');
+      if (!(await this.isJobRunning(job))) return 'skipped';
       await this.deps.bench.newSite(instance.siteName);
+      if (!(await this.isJobRunning(job))) return 'skipped';
 
       await this.setStatus(instance, 'installing');
+      if (!(await this.isJobRunning(job))) return 'skipped';
       await this.deps.bench.ensureAppInstalled(instance.siteName, 'erpnext');
+      if (!(await this.isJobRunning(job))) return 'skipped';
 
       await this.setStatus(instance, 'configuring');
+      if (!(await this.isJobRunning(job))) return 'skipped';
       await this.deps.bench.setHostname(instance.siteName, instance.hostname);
+      if (!(await this.isJobRunning(job))) return 'skipped';
       await this.configureRouting(log, instance);
+      if (!(await this.isJobRunning(job))) return 'skipped';
 
       await this.deps.health.waitForHealthy(instance.hostname);
 
-      await this.deps.store.updateInstance(instance.id, {
-        status: 'ready',
-        errorMessage: null,
-      });
-      await this.deps.store.completeJob(job.id);
+      if (!(await this.deps.store.completeProvisioningJob(job.id, instance.id, claim))) return 'skipped';
       await this.deps.store.recordAudit({
         actorUserId: null,
         action: 'instance.ready',
@@ -167,8 +184,17 @@ export class ProvisioningWorker {
       this.logger.info(log, 'instance ready');
       return 'ready';
     } catch (err) {
+      if (!(await this.isJobRunning(job))) return 'skipped';
       return this.handleFailure(job, instance, err);
     }
+  }
+
+  private async isJobRunning(job: ProvisioningJob): Promise<boolean> {
+    if (!job.lockedAt) return false;
+    const current = await this.deps.store.findJobById(job.id);
+    return current?.status === 'running' &&
+      current.attempts === job.attempts &&
+      current.lockedAt?.getTime() === job.lockedAt.getTime();
   }
 
   private async processBackupJob(job: ProvisioningJob, instance: Instance): Promise<JobOutcome> {
@@ -374,6 +400,8 @@ export class ProvisioningWorker {
     instance: Instance,
     err: unknown,
   ): Promise<JobOutcome> {
+    if (!job.lockedAt) return 'skipped';
+    const claim = { attempts: job.attempts, lockedAt: job.lockedAt };
     const message = this.sanitizeError(err);
     const exhausted = job.attempts >= job.maxAttempts;
 
@@ -384,9 +412,17 @@ export class ProvisioningWorker {
 
     await this.safeDrop(instance);
 
+    const recorded = await this.deps.store.recordProvisioningFailure(
+      job.id,
+      instance.id,
+      claim,
+      exhausted,
+      new Date(this.now().getTime() + computeBackoffMs(job.attempts)),
+      message,
+    );
+    if (!recorded) return 'skipped';
+
     if (exhausted) {
-      await this.deps.store.failJob(job.id, message);
-      await this.deps.store.updateInstance(instance.id, { status: 'failed', errorMessage: message });
       await this.deps.store.recordAudit({
         actorUserId: null,
         action: 'instance.failed',
@@ -397,9 +433,6 @@ export class ProvisioningWorker {
       return 'failed';
     }
 
-    const delay = computeBackoffMs(job.attempts);
-    await this.deps.store.rescheduleJob(job.id, new Date(this.now().getTime() + delay), message);
-    await this.deps.store.updateInstance(instance.id, { status: 'queued', errorMessage: message });
     return 'retry';
   }
 

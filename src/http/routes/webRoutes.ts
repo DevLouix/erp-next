@@ -41,7 +41,11 @@ function layout(title: string, body: string, user?: User | null): string {
     ? `<nav>
         <a href="/dashboard">Dashboard</a>
         ${user.role === 'admin' ? '<a href="/admin">Admin</a>' : ''}
-        <form method="post" action="/auth/logout" class="inline">
+      <button type="button" class="theme-toggle" data-theme-toggle aria-label="Toggle color theme" title="Toggle color theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.64 5.64l1.42 1.42m9.88 9.88 1.42 1.42m0-12.72-1.42 1.42m-9.88 9.88-1.42 1.42M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"/></svg>
+        <span>Theme</span>
+      </button>
+      <form method="post" action="/auth/logout" class="inline">
           <button type="submit" class="link">Sign out</button>
         </form>
         <span class="who">${escapeHtml(user.email)}</span>
@@ -54,7 +58,8 @@ function layout(title: string, body: string, user?: User | null): string {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(title)} · ERPNext Hosting</title>
   <style>
-  :root { color-scheme: light dark; --bg: #0b1220; --surface: #121e30; --surface-raised: #19283d; --line: #26364d; --text: #e6edf7; --muted: #97a8bf; --accent: #65a6ff; }
+  :root { color-scheme: dark; --bg: #0b1220; --surface: #121e30; --surface-raised: #19283d; --line: #26364d; --text: #e6edf7; --muted: #97a8bf; --accent: #65a6ff; }
+  :root[data-theme="light"] { color-scheme: light; --bg: #f2f6fb; --surface: #fff; --surface-raised: #eef3f9; --line: #dce4ef; --text: #172438; --muted: #5d6d82; --accent: #1d4ed8; }
     * { box-sizing: border-box; }
   body { font: 15px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--text); }
   header { min-height: 68px; padding: .8rem clamp(1rem, 4vw, 3rem); border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 1.5rem; background: var(--surface); }
@@ -62,6 +67,8 @@ function layout(title: string, body: string, user?: User | null): string {
   nav { display: flex; gap: 1.25rem; align-items: center; margin-left: auto; }
   nav a, .link { color: var(--accent); text-decoration: none; background: none; border: none; cursor: pointer; font: inherit; padding: 0; }
   nav a:hover, a:hover { text-decoration: underline; }
+  .theme-toggle { display: inline-flex; align-items: center; gap: .4rem; background: var(--surface-raised); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: .4rem .65rem; cursor: pointer; font: inherit; font-size: .85rem; }
+  .theme-toggle svg, .external-link-icon { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
   .who { color: var(--muted); font-size: .85rem; }
   .inline { display: inline; }
   main { max-width: 1180px; margin: 0 auto; padding: clamp(1.25rem, 4vw, 3rem); }
@@ -91,15 +98,28 @@ function layout(title: string, body: string, user?: User | null): string {
     .warning { border-color: #b45309; background: #451a03; }
     .danger-zone { border-color: #7f1d1d; }
     .actions { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+    .hostname-link { display: inline-flex; align-items: center; gap: .35rem; color: var(--accent); text-decoration: none; white-space: nowrap; }
+    .hostname-link:hover { text-decoration: underline; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+    a.manage-link { display: inline-flex; align-items: center; justify-content: center; min-height: 2.15rem; padding: .35rem .7rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); color: var(--text); text-decoration: none; font-weight: 600; transition: border-color .15s, background .15s; }
+    a.manage-link:hover { border-color: var(--accent); background: var(--surface); text-decoration: none; }
+    button:disabled { cursor: not-allowed; opacity: .55; }
     .metric { display: inline-flex; gap: .35rem; align-items: baseline; padding: .4rem .7rem; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); }
-    @media (prefers-color-scheme: light) {
-      :root { --bg: #f2f6fb; --surface: #fff; --surface-raised: #eef3f9; --line: #dce4ef; --text: #172438; --muted: #5d6d82; --accent: #1d4ed8; }
-      .warning { background: #fffbeb; color: #78350f; }
-      input[type=text], input[type=password], input[type=file] { border-color: #cbd5e1; }
-      .secondary { color: #172438 !important; }
-    }
+  :root[data-theme="light"] .warning { background: #fffbeb; color: #78350f; }
+  :root[data-theme="light"] input[type=text], :root[data-theme="light"] input[type=password], :root[data-theme="light"] input[type=file] { border-color: #cbd5e1; }
+  :root[data-theme="light"] .secondary { color: #172438 !important; }
     @media (max-width: 640px) { header { align-items: flex-start; flex-wrap: wrap; } nav { margin-left: 0; width: 100%; flex-wrap: wrap; } .page-heading { align-items: flex-start; flex-direction: column; } main { padding: 1rem; } }
   </style>
+  <script>
+    (function () {
+      var stored;
+      try { stored = localStorage.getItem('erpnext-hosting-theme'); } catch (_) {}
+      var theme = stored === 'light' || stored === 'dark'
+        ? stored
+        : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+  </script>
 </head>
 <body>
   <header>
@@ -107,17 +127,45 @@ function layout(title: string, body: string, user?: User | null): string {
     ${nav}
   </header>
   <main>${body}</main>
+  <script>
+    (function () {
+      var button = document.querySelector('[data-theme-toggle]');
+      var root = document.documentElement;
+      var initial = root.getAttribute('data-theme') || 'dark';
+      if (!button) return;
+      button.setAttribute('aria-label', 'Switch to ' + (initial === 'dark' ? 'light' : 'dark') + ' theme');
+      button.setAttribute('title', 'Switch to ' + (initial === 'dark' ? 'light' : 'dark') + ' theme');
+      button.setAttribute('aria-pressed', String(initial === 'light'));
+      button.addEventListener('click', function () {
+        var theme = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+        root.setAttribute('data-theme', theme);
+        try { localStorage.setItem('erpnext-hosting-theme', theme); } catch (_) {}
+        button.setAttribute('aria-label', 'Switch to ' + (theme === 'dark' ? 'light' : 'dark') + ' theme');
+        button.setAttribute('title', 'Switch to ' + (theme === 'dark' ? 'light' : 'dark') + ' theme');
+        button.setAttribute('aria-pressed', String(theme === 'light'));
+      });
+    })();
+  </script>
 </body>
 </html>`;
+}
+
+function hostnameLink(hostname: string): string {
+  const safeHostname = escapeHtml(hostname);
+  return `<a class="hostname-link" href="https://${safeHostname}" target="_blank" rel="noopener noreferrer">
+    ${safeHostname}
+    <svg class="external-link-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6m-11 3L20 4"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/></svg>
+    <span class="sr-only">opens in a new tab</span>
+  </a>`;
 }
 
 function instanceRow(instance: Instance): string {
   return `<tr>
     <td>${escapeHtml(instance.companyName)}</td>
-    <td>${escapeHtml(instance.hostname)}</td>
+    <td>${hostnameLink(instance.hostname)}</td>
     <td>${statusBadge(instance.status)}</td>
     <td class="muted">${instance.createdAt.toISOString()}</td>
-    <td><a href="/dashboard/instances/${encodeURIComponent(instance.id)}">Manage</a></td>
+    <td><a class="manage-link" href="/dashboard/instances/${encodeURIComponent(instance.id)}">Manage</a></td>
   </tr>`;
 }
 
@@ -241,8 +289,12 @@ export function registerWebRoutes(
     const siteBackups = await siteBackupService.listFor(user, instance.id);
     const ready = instance.status === 'ready';
     const failed = instance.status === 'failed';
-    const canRetry =
+    const retryAvailable =
       failed && latestJob?.type === 'provision' && latestJob.status === 'failed';
+    const canStopProvisioning =
+      ['queued', 'provisioning', 'installing', 'configuring'].includes(instance.status) &&
+      latestJob?.type === 'provision' &&
+      ['queued', 'running'].includes(latestJob.status);
     const canDelete = ready || failed;
     const pageQuery = request.query as { error?: string };
     const errorBox = pageQuery.error
@@ -286,7 +338,7 @@ export function registerWebRoutes(
         ${urlLine}
       </div>
       <div class="card">
-        <p class="muted">${escapeHtml(instance.hostname)} · ${escapeHtml(instance.siteName)}</p>
+        <p class="muted">${hostnameLink(instance.hostname)} · ${escapeHtml(instance.siteName)}</p>
         <p>Status: ${statusBadge(instance.status)}</p>
         ${errorLine}
         <p class="muted">Provisioning attempts: ${latestJob?.attempts ?? 0} / ${latestJob?.maxAttempts ?? 0}</p>
@@ -306,12 +358,27 @@ export function registerWebRoutes(
         <p class="muted">Changing this label does not rename your ERPNext site or change its URL.</p>
       </div>
       ${
-        canRetry
-          ? `<div class="card warning">
+        instance.status !== 'ready' && instance.status !== 'deleting'
+          ? `<div class="card ${retryAvailable ? 'warning' : ''}">
         <h3>Provisioning needs attention</h3>
-        <p>The last provisioning attempt failed. Retry to queue a fresh attempt; your site URL and workspace data will be preserved.</p>
+        <p>${retryAvailable
+          ? 'The last provisioning attempt failed. Retry keeps your site URL but removes any partial, not-ready setup before provisioning again.'
+          : failed
+            ? 'This failed operation cannot be retried as a provisioning attempt.'
+            : 'Retry becomes available if provisioning fails. It is disabled while your workspace is being built.'}</p>
         <form method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/retry">
-          <button class="action" type="submit">Retry provisioning</button>
+          <button class="action" type="submit" ${retryAvailable ? '' : 'disabled'}>Retry provisioning</button>
+        </form>
+      </div>`
+          : ''
+      }
+      ${
+        canStopProvisioning
+          ? `<div class="card warning">
+        <h3>Provisioning is taking too long?</h3>
+        <p>Stop this provisioning job if it appears stuck. The incomplete setup remains in place until you retry; retrying removes that partial setup before provisioning again.</p>
+        <form method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/stop" onsubmit="return confirm('Stop provisioning for ${escapeHtml(instance.hostname)}?')">
+          <button class="action danger" type="submit">Stop provisioning</button>
         </form>
       </div>`
           : ''
@@ -393,6 +460,18 @@ export function registerWebRoutes(
     }
   });
 
+  app.post('/dashboard/instances/:id/stop', { preHandler: requireAuth }, async (request, reply) => {
+    const { user } = getAuth(request);
+    const { id } = request.params as { id: string };
+    try {
+      await instanceService.stopProvisioning(user, id);
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}`, 303);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not stop provisioning';
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}?error=${encodeURIComponent(message)}`, 303);
+    }
+  });
+
   app.get('/admin', { preHandler: [requireAuth, requireAdmin] }, async (request, reply) => {
     const { user } = getAuth(request);
     const users = await adminService.listUsers(user);
@@ -426,22 +505,30 @@ export function registerWebRoutes(
       )
       .join('');
 
-    const instanceRows = instances
-      .map(
-        (i) => `<tr>
+    const instanceRows = (await Promise.all(instances.map(async (i) => {
+      const latestJob = await store.findLatestJobForInstance(i.id);
+      const retryAvailable =
+        i.status === 'failed' && latestJob?.type === 'provision' && latestJob.status === 'failed';
+      const stopAvailable =
+        ['queued', 'provisioning', 'installing', 'configuring'].includes(i.status) &&
+        latestJob?.type === 'provision' &&
+        ['queued', 'running'].includes(latestJob.status);
+      return `<tr>
         <td>${escapeHtml(i.companyName)}</td>
-        <td>${escapeHtml(i.hostname)}</td>
+        <td>${hostnameLink(i.hostname)}</td>
         <td>${statusBadge(i.status)}</td>
         <td class="muted">${i.ownerUserId}</td>
         <td>
-          <a href="/dashboard/instances/${encodeURIComponent(i.id)}">Manage</a>
+          <a class="manage-link" href="/dashboard/instances/${encodeURIComponent(i.id)}">Manage</a>
           <form method="post" action="/admin/instances/${encodeURIComponent(i.id)}/retry" class="inline">
-            <button class="action secondary" type="submit">Retry</button>
+            <button class="action secondary" type="submit" ${retryAvailable ? '' : 'disabled'}>Retry</button>
           </form>
+          ${stopAvailable ? `<form method="post" action="/admin/instances/${encodeURIComponent(i.id)}/stop" class="inline" onsubmit="return confirm('Stop provisioning for ${escapeHtml(i.hostname)}?')">
+            <button class="action danger" type="submit">Stop</button>
+          </form>` : ''}
         </td>
-      </tr>`,
-      )
-      .join('');
+      </tr>`;
+    }))).join('');
 
     const auditRows = audit
       .map(
@@ -595,6 +682,19 @@ export function registerWebRoutes(
       await adminService.retryInstance(user, id);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Could not retry instance';
+      await reply.redirect(`/admin?error=${encodeURIComponent(message)}`, 303);
+      return;
+    }
+    await reply.redirect('/admin', 303);
+  });
+
+  app.post('/admin/instances/:id/stop', { preHandler: [requireAuth, requireAdmin] }, async (request, reply) => {
+    const { user } = getAuth(request);
+    const { id } = request.params as { id: string };
+    try {
+      await instanceService.stopProvisioning(user, id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not stop provisioning';
       await reply.redirect(`/admin?error=${encodeURIComponent(message)}`, 303);
       return;
     }

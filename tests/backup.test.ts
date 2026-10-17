@@ -94,6 +94,49 @@ describe('backup export', () => {
     expect(download.statusCode).toBe(200);
     expect(download.json().app).toBe('erp-next-platform');
   });
+
+  it('lets administrators select automatic and S3-compatible tenant backup settings', async () => {
+    const ctx = await app();
+    const admin = await loginAs(ctx, {
+      sub: 'root',
+      email: 'root@example.test',
+      role: 'platform-admin',
+    });
+    const updated = await ctx.app.inject({
+      method: 'PUT',
+      url: '/api/admin/site-backup-settings',
+      headers: { cookie: admin.cookie },
+      payload: {
+        automaticEnabled: true,
+        intervalHours: 24,
+        s3Endpoint: 'https://objects.example.test',
+        s3Bucket: 'erpnext-backups',
+        s3Region: 'us-east-1',
+      },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().settings.automaticEnabled).toBe(true);
+    expect(updated.json().settings.s3Endpoint).toBe('https://objects.example.test');
+    expect(updated.json().settings.nextRunAt).toBeTruthy();
+  });
+
+  it('does not allow regular users to configure backup policy', async () => {
+    const ctx = await app();
+    const user = await loginAs(ctx, { sub: 'plain', email: 'plain@example.test' });
+    const res = await ctx.app.inject({
+      method: 'PUT',
+      url: '/api/admin/site-backup-settings',
+      headers: { cookie: user.cookie },
+      payload: {
+        automaticEnabled: true,
+        intervalHours: 24,
+        s3Endpoint: null,
+        s3Bucket: null,
+        s3Region: null,
+      },
+    });
+    expect(res.statusCode).toBe(403);
+  });
 });
 
 describe('restore onto another instance', () => {
@@ -256,5 +299,78 @@ describe('restore onto another instance', () => {
     const instances = await target.store.listAllInstances();
     expect(instances[0]?.hostname).toBe('acme-corp.new.example.test');
     expect(instances[0]?.siteName).toBe('acme-corp.new.example.test');
+  });
+
+  it('does not requeue a snapshot captured during permanent deletion', async () => {
+    const source = await app();
+    const sourceAdmin = await loginAs(source, {
+      sub: 'root',
+      email: 'root@example.test',
+      role: 'platform-admin',
+    });
+    const alice = await loginAs(source, { sub: 'alice', email: 'alice@example.test' });
+    const created = await source.app.inject({
+      method: 'POST',
+      url: '/api/instances',
+      headers: { cookie: alice.cookie },
+      payload: { name: 'Acme Corp' },
+    });
+    await source.store.updateInstance(created.json().instance.id, { status: 'deleting' });
+    const snapshot = await exportSnapshot(source, sourceAdmin.cookie);
+
+    const target = await app();
+    const targetAdmin = await loginAs(target, {
+      sub: 'root',
+      email: 'root@example.test',
+      role: 'platform-admin',
+    });
+    const imported = await target.app.inject({
+      method: 'POST',
+      url: '/api/admin/backup/import',
+      headers: { cookie: targetAdmin.cookie },
+      payload: { snapshot, dryRun: false },
+    });
+
+    expect(imported.statusCode).toBe(200);
+    expect(imported.json().summary.jobsRequeued).toBe(0);
+    const instances = await target.store.listAllInstances();
+    expect(instances[0]?.status).toBe('failed');
+    expect(instances[0]?.errorMessage).toContain('captured during permanent deletion');
+    expect(await target.store.findLatestJobForInstance(instances[0]!.id)).toBeNull();
+  });
+
+  it('supports older snapshots without a company display name', async () => {
+    const source = await app();
+    const sourceAdmin = await loginAs(source, {
+      sub: 'root',
+      email: 'root@example.test',
+      role: 'platform-admin',
+    });
+    const alice = await loginAs(source, { sub: 'alice', email: 'alice@example.test' });
+    await source.app.inject({
+      method: 'POST',
+      url: '/api/instances',
+      headers: { cookie: alice.cookie },
+      payload: { name: 'Acme Corp' },
+    });
+    const snapshot = await exportSnapshot(source, sourceAdmin.cookie);
+    delete (snapshot.instances as Array<Record<string, unknown>>)[0]!.companyName;
+
+    const target = await app();
+    const targetAdmin = await loginAs(target, {
+      sub: 'root',
+      email: 'root@example.test',
+      role: 'platform-admin',
+    });
+    const imported = await target.app.inject({
+      method: 'POST',
+      url: '/api/admin/backup/import',
+      headers: { cookie: targetAdmin.cookie },
+      payload: { snapshot, dryRun: false },
+    });
+
+    expect(imported.statusCode).toBe(200);
+    const instance = (await target.store.listAllInstances())[0];
+    expect(instance?.companyName).toBe('acme-corp');
   });
 });

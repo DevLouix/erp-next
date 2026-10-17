@@ -50,6 +50,7 @@ suite('PrismaStore (integration)', () => {
     });
     const i1 = await store.createInstance({
       ownerUserId: user.id,
+      companyName: 'One',
       siteName: 'one.apps.test',
       hostname: 'one.apps.test',
       idempotencyKey: null,
@@ -57,6 +58,7 @@ suite('PrismaStore (integration)', () => {
     });
     const i2 = await store.createInstance({
       ownerUserId: user.id,
+      companyName: 'Two',
       siteName: 'two.apps.test',
       hostname: 'two.apps.test',
       idempotencyKey: null,
@@ -78,6 +80,7 @@ suite('PrismaStore (integration)', () => {
     const user = await store.findUserByOauthSubject('sub-2');
     const instance = await store.createInstance({
       ownerUserId: user!.id,
+      companyName: 'Three',
       siteName: 'three.apps.test',
       hostname: 'three.apps.test',
       idempotencyKey: null,

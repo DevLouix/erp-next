@@ -10,6 +10,7 @@ export const INSTANCE_STATUSES = [
   'provisioning',
   'installing',
   'configuring',
+  'deleting',
   'ready',
   'failed',
 ] as const;
@@ -18,6 +19,8 @@ export type InstanceStatus = (typeof INSTANCE_STATUSES)[number];
 
 export const JOB_STATUSES = ['queued', 'running', 'succeeded', 'failed'] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
+
+export type JobType = 'provision' | 'delete' | 'backup';
 
 export const USER_ROLES = ['user', 'admin'] as const;
 export type UserRole = (typeof USER_ROLES)[number];
@@ -36,6 +39,7 @@ export interface User {
 export interface Instance {
   id: string;
   ownerUserId: string;
+  companyName: string;
   siteName: string;
   hostname: string;
   status: InstanceStatus;
@@ -48,6 +52,8 @@ export interface Instance {
 export interface ProvisioningJob {
   id: string;
   instanceId: string;
+  type: JobType;
+  siteBackupId: string | null;
   status: JobStatus;
   attempts: number;
   maxAttempts: number;
@@ -89,6 +95,7 @@ export interface AuditLogEntry {
 
 export interface CreateInstanceInput {
   ownerUserId: string;
+  companyName: string;
   siteName: string;
   hostname: string;
   idempotencyKey: string | null;
@@ -98,19 +105,58 @@ export interface CreateInstanceInput {
 export interface CreateJobInput {
   instanceId: string;
   maxAttempts: number;
+  type?: JobType;
+  siteBackupId?: string | null;
 }
 
 export interface ImportInstanceInput {
   ownerUserId: string;
+  companyName: string;
   siteName: string;
   hostname: string;
   status: InstanceStatus;
   errorMessage: string | null;
 }
 
+export type SiteBackupStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type SiteBackupPartKind =
+  | 'database'
+  | 'public-files'
+  | 'private-files'
+  | 'site-config';
+
+export interface SiteBackupPart {
+  kind: SiteBackupPartKind;
+  relativePath: string;
+  sizeBytes: number;
+  s3ObjectKey?: string;
+}
+
+export interface SiteBackup {
+  id: string;
+  siteName: string;
+  hostname: string;
+  status: SiteBackupStatus;
+  parts: SiteBackupPart[];
+  createdByUserId: string | null;
+  errorMessage: string | null;
+  createdAt: Date;
+  completedAt: Date | null;
+}
+
+export interface SiteBackupSettings {
+  automaticEnabled: boolean;
+  intervalHours: number;
+  nextRunAt: Date | null;
+  s3Endpoint: string | null;
+  s3Bucket: string | null;
+  s3Region: string | null;
+  updatedAt: Date;
+}
+
 // ── Backups ────────────────────────────────────────────────────────────────
 
-export const BACKUP_SCHEMA_VERSION = 1;
+export const BACKUP_SCHEMA_VERSION = 2;
 
 export interface SnapshotUser {
   id: string;
@@ -125,6 +171,7 @@ export interface SnapshotUser {
 export interface SnapshotInstance {
   id: string;
   ownerUserId: string;
+  companyName: string;
   siteName: string;
   hostname: string;
   status: InstanceStatus;

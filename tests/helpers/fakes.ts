@@ -6,6 +6,8 @@ import type {
 } from '../../src/auth/identityProvider.js';
 import type { ProvisioningBench } from '../../src/provisioning/worker.js';
 import type { HealthWaiter } from '../../src/provisioning/worker.js';
+import type { SiteBackupPart } from '../../src/domain/types.js';
+import type { SiteBackupSettings } from '../../src/domain/types.js';
 
 /** A scriptable stand-in for Truemoi that never touches the network. */
 export class FakeIdentityProvider implements IdentityProvider {
@@ -112,7 +114,33 @@ export class FakeBench implements ProvisioningBench {
 
   async dropSite(siteName: string): Promise<void> {
     this.calls.push({ op: 'drop-site', args: [siteName] });
+    this.maybeFail('dropSite');
     this.siteExists = false;
+  }
+
+  async backupSite(siteName: string): Promise<SiteBackupPart[]> {
+    this.calls.push({ op: 'backup-site', args: [siteName] });
+    this.maybeFail('backupSite');
+    return [
+      { kind: 'database', relativePath: `${siteName}/backup.sql.gz`, sizeBytes: 1024 },
+      { kind: 'public-files', relativePath: `${siteName}/files.tar`, sizeBytes: 512 },
+      { kind: 'private-files', relativePath: `${siteName}/private-files.tar`, sizeBytes: 512 },
+      { kind: 'site-config', relativePath: `${siteName}/site_config_backup.json`, sizeBytes: 128 },
+    ];
+  }
+
+  async uploadBackup(
+    siteName: string,
+    backupId: string,
+    parts: SiteBackupPart[],
+    _target: Pick<SiteBackupSettings, 's3Endpoint' | 's3Bucket' | 's3Region'>,
+  ): Promise<SiteBackupPart[]> {
+    this.calls.push({ op: 'upload-backup', args: [siteName, backupId] });
+    this.maybeFail('uploadBackup');
+    return parts.map((part) => ({
+      ...part,
+      s3ObjectKey: `erpnext-backups/${siteName}/${backupId}/${part.kind}`,
+    }));
   }
 }
 

@@ -170,6 +170,175 @@ describe('ProvisioningWorker failure handling', () => {
   });
 });
 
+describe('ProvisioningWorker site deletion', () => {
+  it('drops the tenant site and removes its platform record', async () => {
+    const instance = await seed();
+    await store.updateInstance(instance.id, { status: 'ready' });
+    await store.completeJob((await store.findLatestJobForInstance(instance.id))!.id);
+    await service.deleteFor(owner, instance.id, instance.hostname);
+    const bench = new FakeBench();
+    const worker = makeWorker(bench);
+    const claimed = await store.claimNextJob(new Date());
+    expect(claimed?.type).toBe('delete');
+    expect(await worker.processJob(claimed!)).toBe('deleted');
+    expect(await store.findInstanceById(instance.id)).toBeNull();
+    expect(bench.calls.map((call) => call.op)).toContain('drop-site');
+    const safetyBackups = await store.listSiteBackups(instance.siteName);
+    expect(safetyBackups).toHaveLength(1);
+    expect(safetyBackups[0]?.status).toBe('completed');
+    expect(safetyBackups[0]?.createdByUserId).toBe(owner.id);
+  });
+
+  it('retains the instance and retries if Frappe refuses to drop the site', async () => {
+    const instance = await seed();
+    await store.updateInstance(instance.id, { status: 'ready' });
+    await store.completeJob((await store.findLatestJobForInstance(instance.id))!.id);
+    await service.deleteFor(owner, instance.id, instance.hostname);
+    const bench = new FakeBench();
+    bench.failOn.add('dropSite');
+    const worker = makeWorker(bench);
+    const claimed = await store.claimNextJob(new Date());
+    expect(await worker.processJob(claimed!)).toBe('retry');
+    expect((await store.findInstanceById(instance.id))?.status).toBe('deleting');
+  });
+
+  it('does not delete a tenant if its automatic pre-delete backup fails', async () => {
+    const instance = await seed();
+    await store.updateInstance(instance.id, { status: 'ready' });
+    await store.completeJob((await store.findLatestJobForInstance(instance.id))!.id);
+    await service.deleteFor(owner, instance.id, instance.hostname);
+    const bench = new FakeBench();
+    bench.failOn.add('backupSite');
+    const worker = makeWorker(bench);
+    const claimed = await store.claimNextJob(new Date());
+    expect(await worker.processJob(claimed!)).toBe('retry');
+    expect(await store.findInstanceById(instance.id)).not.toBeNull();
+    expect(bench.calls.map((call) => call.op)).not.toContain('drop-site');
+    expect((await store.listSiteBackups(instance.siteName))[0]?.status).toBe('failed');
+  });
+
+  it('allows deletion after a verified local pre-delete backup when optional S3 is unavailable', async () => {
+    const instance = await seed();
+    await store.updateInstance(instance.id, { status: 'ready' });
+    await store.completeJob((await store.findLatestJobForInstance(instance.id))!.id);
+    await store.updateSiteBackupSettings(
+      {
+        automaticEnabled: false,
+        intervalHours: 24,
+        s3Endpoint: 'https://objects.example.test',
+        s3Bucket: 'erpnext-backups',
+        s3Region: 'us-east-1',
+      },
+      new Date(),
+    );
+    await service.deleteFor(owner, instance.id, instance.hostname);
+    const bench = new FakeBench();
+    bench.failOn.add('uploadBackup');
+    const worker = makeWorker(bench);
+    const claimed = await store.claimNextJob(new Date());
+
+    expect(await worker.processJob(claimed!)).toBe('deleted');
+    expect(await store.findInstanceById(instance.id)).toBeNull();
+    const safetyBackup = (await store.listSiteBackups(instance.siteName))[0];
+    expect(safetyBackup?.status).toBe('completed');
+    expect(safetyBackup?.parts).toHaveLength(4);
+    expect(safetyBackup?.errorMessage).toContain('local backup remains available');
+    expect(bench.calls.map((call) => call.op)).toContain('drop-site');
+  });
+});
+
+describe('ProvisioningWorker site backups', () => {
+  it('archives complete tenant backups before reporting success', async () => {
+    const instance = await seed();
+    await store.updateInstance(instance.id, { status: 'ready' });
+    await store.completeJob((await store.findLatestJobForInstance(instance.id))!.id);
+    const backup = await store.queueSiteBackup(instance, owner.id, 3);
+    const bench = new FakeBench();
+    const worker = makeWorker(bench);
+    const claimed = await store.claimNextJob(new Date());
+    expect(await worker.processJob(claimed!)).toBe('ready');
+    expect((await store.findSiteBackup(backup.id))?.status).toBe('completed');
+    expect((await store.findSiteBackup(backup.id))?.parts).toHaveLength(4);
+  });
+
+  it('uploads configured automatic backups to the selected S3-compatible target', async () => {
+    const instance = await seed();
+    await store.updateInstance(instance.id, { status: 'ready' });
+    await store.completeJob((await store.findLatestJobForInstance(instance.id))!.id);
+    const now = new Date();
+    await store.updateSiteBackupSettings(
+      {
+        automaticEnabled: true,
+        intervalHours: 24,
+        s3Endpoint: 'https://objects.example.test',
+        s3Bucket: 'erpnext-backups',
+        s3Region: 'us-east-1',
+      },
+      now,
+    );
+    expect(
+      await store.queueScheduledSiteBackups(new Date(now.getTime() + 24 * 60 * 60 * 1000 + 1), 3),
+    ).toBe(1);
+    const bench = new FakeBench();
+    const worker = makeWorker(bench);
+    const job = await store.claimNextJob(new Date(Date.now() + 24 * 60 * 60 * 1000));
+    expect(await worker.processJob(job!)).toBe('ready');
+    expect(bench.calls.map((call) => call.op)).toContain('upload-backup');
+    const saved = (await store.listSiteBackups(instance.siteName))[0];
+    expect(saved?.parts.every((part) => Boolean(part.s3ObjectKey))).toBe(true);
+  });
+
+  it('keeps verified local archives downloadable when the optional S3 upload fails', async () => {
+    const instance = await seed();
+    await store.updateInstance(instance.id, { status: 'ready' });
+    await store.completeJob((await store.findLatestJobForInstance(instance.id))!.id);
+    const now = new Date();
+    await store.updateSiteBackupSettings(
+      {
+        automaticEnabled: false,
+        intervalHours: 24,
+        s3Endpoint: 'https://objects.example.test',
+        s3Bucket: 'erpnext-backups',
+        s3Region: 'us-east-1',
+      },
+      now,
+    );
+    const backup = await store.queueSiteBackup(instance, owner.id, 3);
+    const bench = new FakeBench();
+    bench.failOn.add('uploadBackup');
+    const worker = makeWorker(bench);
+    const job = await store.claimNextJob(new Date());
+
+    expect(await worker.processJob(job!)).toBe('ready');
+    const saved = await store.findSiteBackup(backup.id);
+    expect(saved?.status).toBe('completed');
+    expect(saved?.parts).toHaveLength(4);
+    expect(saved?.parts.every((part) => !part.s3ObjectKey)).toBe(true);
+    expect(saved?.errorMessage).toContain('local backup remains available');
+  });
+
+  it('claims an automatic schedule only once after its due time', async () => {
+    const instance = await seed();
+    await store.updateInstance(instance.id, { status: 'ready' });
+    await store.completeJob((await store.findLatestJobForInstance(instance.id))!.id);
+    const now = new Date();
+    await store.updateSiteBackupSettings(
+      {
+        automaticEnabled: true,
+        intervalHours: 24,
+        s3Endpoint: null,
+        s3Bucket: null,
+        s3Region: null,
+      },
+      now,
+    );
+    const due = new Date(now.getTime() + 24 * 60 * 60 * 1000 + 1);
+    expect(await store.queueScheduledSiteBackups(due, 3)).toBe(1);
+    expect(await store.queueScheduledSiteBackups(due, 3)).toBe(0);
+    expect((await store.findLatestJobForInstance(instance.id))?.type).toBe('backup');
+  });
+});
+
 describe('worker recovery', () => {
   it('re-queues a job whose worker died mid-run', async () => {
     const instance = await seed();

@@ -32,6 +32,7 @@ model User {
 model Instance {
   id           String   @id @default(cuid())
   ownerUserId  String   @map("owner_user_id")
+  companyName  String   @map("company_name")
   siteName     String   @unique @map("site_name")
   hostname     String   @unique
   status       String   @default("queued")
@@ -51,6 +52,8 @@ model Instance {
 model ProvisioningJob {
   id          String    @id @default(cuid())
   instanceId  String    @map("instance_id")
+  type        String    @default("provision")
+  siteBackupId String?  @map("site_backup_id")
   status      String    @default("queued")
   attempts    Int       @default(0)
   maxAttempts Int       @default(5) @map("max_attempts")
@@ -65,6 +68,34 @@ model ProvisioningJob {
   @@index([status, nextRunAt])
   @@index([instanceId])
   @@map("provisioning_jobs")
+}
+
+model SiteBackup {
+  id              String    @id @default(cuid())
+  siteName        String    @map("site_name")
+  hostname        String
+  status          String    @default("queued")
+  parts           Json      @default("[]")
+  createdByUserId String?   @map("created_by_user_id")
+  errorMessage    String?   @map("error_message")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  completedAt     DateTime? @map("completed_at")
+
+  @@index([siteName, createdAt])
+  @@map("site_backups")
+}
+
+model SiteBackupSettings {
+  id                Int       @id @default(1)
+  automaticEnabled  Boolean   @default(false) @map("automatic_enabled")
+  intervalHours     Int       @default(24) @map("interval_hours")
+  nextRunAt         DateTime? @map("next_run_at")
+  s3Endpoint        String?   @map("s3_endpoint")
+  s3Bucket          String?   @map("s3_bucket")
+  s3Region          String?   @map("s3_region")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  @@map("site_backup_settings")
 }
 
 model Session {

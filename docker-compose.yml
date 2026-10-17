@@ -57,6 +57,9 @@ services:
         required: false
     environment:
       DATABASE_URL: postgresql://erpnext:${PLATFORM_DB_PASSWORD:-erpnext}@platform-postgres:5432/erpnext_platform
+      AWS_ACCESS_KEY_ID: ""
+      AWS_SECRET_ACCESS_KEY: ""
+      AWS_SESSION_TOKEN: ""
     ports:
       # Host port is configurable so this stack can coexist with other
       # containers; the in-container port stays fixed at 3000.
@@ -64,6 +67,10 @@ services:
     depends_on:
       platform-postgres:
         condition: service_healthy
+      frappe-backup-volume-init:
+        condition: service_completed_successfully
+    volumes:
+      - frappe-backups:/home/frappe/frappe-bench/archived-backups:ro
 
   platform-worker:
     build:
@@ -71,6 +78,10 @@ services:
       dockerfile: docker/worker.Dockerfile
       args:
         ERPNEXT_VERSION: ${ERPNEXT_VERSION:-v16.51.1}
+    # The background worker does not serve assets; skip the Frappe entrypoint's
+    # shared sites/assets symlink step so worker restarts do not contend with it.
+    entrypoint: ["/bin/bash", "-lc"]
+    command: ["umask 0002; exec pnpm worker"]
     restart: unless-stopped
     networks: [erpnext]
     env_file:
@@ -85,11 +96,24 @@ services:
     volumes:
       - frappe-sites:/home/frappe/frappe-bench/sites
       - frappe-logs:/home/frappe/frappe-bench/logs
+      - frappe-backups:/home/frappe/frappe-bench/archived-backups
     depends_on:
       platform-postgres:
         condition: service_healthy
       frappe-configurator:
         condition: service_completed_successfully
+      frappe-backup-volume-init:
+        condition: service_completed_successfully
+
+  frappe-backup-volume-init:
+    image: frappe/erpnext:${ERPNEXT_VERSION:-v16.51.1}
+    user: root
+    restart: "no"
+    entrypoint: [bash, -c]
+    command:
+      - mkdir -p /backup && chown -R frappe:frappe /backup
+    volumes:
+      - frappe-backups:/backup
 
   # ── Frappe Bench (adapted from frappe_docker pwd.yml) ───────────────────
   frappe-backend:
@@ -200,7 +224,7 @@ services:
 
   frappe-queue-long:
     <<: *frappe-common
-    command: [bench, worker, --queue, long,default,short]
+    command: [bench, worker, --queue, "long,default,short"]
     environment:
       FRAPPE_REDIS_CACHE: redis://frappe-redis-cache:6379
       FRAPPE_REDIS_QUEUE: redis://frappe-redis-queue:6379
@@ -210,7 +234,7 @@ services:
 
   frappe-queue-short:
     <<: *frappe-common
-    command: [bench, worker, --queue, short,default]
+    command: [bench, worker, --queue, "short,default"]
     environment:
       FRAPPE_REDIS_CACHE: redis://frappe-redis-cache:6379
       FRAPPE_REDIS_QUEUE: redis://frappe-redis-queue:6379
@@ -267,6 +291,7 @@ volumes:
   frappe-redis-queue-data:
   frappe-sites:
   frappe-logs:
+  frappe-backups:
 
 networks:
   erpnext:

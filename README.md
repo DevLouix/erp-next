@@ -183,7 +183,9 @@ ones:
 | `TRUEMOI_ADMIN_ROLES` / `ADMIN_EMAILS` | Map Truemoi roles/emails to platform admins. |
 | `PROVISIONING_BASE_DOMAIN` | Sites get `<slug>.<baseDomain>`; wildcard DNS required. |
 | `BENCH_PATH` / `BENCH_BIN` | Bench directory and binary on the worker host. |
+| `MARIADB_HOST` | MariaDB hostname passed to `bench new-site` as `--db-host` (for example, `frappe-db`). |
 | `MARIADB_ROOT_PASSWORD` / `ERPNEXT_ADMIN_PASSWORD` | Used by `bench new-site`; never logged. |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Optional worker deployment secrets for S3-compatible full-site backup uploads; never stored in the platform database. |
 
 ## Authentication (Truemoi)
 
@@ -220,6 +222,7 @@ no password-based auth in the platform.
 ## Instance lifecycle
 
 States: `queued → provisioning → installing → configuring → ready`, or `failed`.
+Permanent deletion transitions through `deleting`.
 
 - `POST /api/instances` validates the name, derives a strict `[a-z0-9-]` slug and
   `<slug>.<baseDomain>` hostname, creates the instance as `queued`, and enqueues a
@@ -249,10 +252,30 @@ States: `queued → provisioning → installing → configuring → ready`, or `
 
 ## Backup, export and import
 
-Platform state (users, instances, jobs, audit history) can be exported as a single
-JSON snapshot and imported into any instance of this platform — for migration,
-disaster recovery, or seeding. Sessions, OAuth transactions and tokens are
-**deliberately excluded**, so imported users simply sign in again.
+Platform state (users, instances and jobs) can be exported as a JSON snapshot and
+imported into another platform deployment. It does **not** contain ERPNext
+business data, audit history, sessions, OAuth transactions, or tokens.
+
+Tenant data is backed up separately using Bench's full backup (MariaDB database
+and public/private files, plus Bench's site configuration needed for recovery).
+A backup is accepted only when all four artifacts are present and non-empty, and
+artifacts are published to the archive volume only after their copied sizes are
+verified. Users can request one from the instance page;
+administrators can enable daily or weekly automatic backups and configure an
+S3-compatible endpoint, bucket and region. AWS credentials are supplied to the
+worker as deployment secrets, never saved by the UI. S3 uploads request server-side
+AES-256 encryption. The site configuration contains database/encryption secrets,
+so it is downloadable by administrators only; tenant owners can still download
+the database and files. Local archives are retained on the persistent
+`frappe-backups` volume. Automatic retention deletion is
+disabled; off-host backup of the volume is still required for disaster recovery.
+Test restores on a non-production site using a compatible Frappe/ERPNext version.
+
+Permanent instance deletion requires typing the exact hostname and confirming
+again in the browser. Before `bench drop-site` runs, the worker creates and
+verifies a full local site backup. If the backup fails, deletion does not proceed
+and the job is retried. A pre-deletion archive remains visible to the site owner
+and administrators after the instance record is removed.
 
 - **Dashboard:** an admin opens `/admin` and uses the backup panel to download a
   snapshot, save a named snapshot, or restore from a file (with a dry-run preview).
@@ -269,8 +292,13 @@ disaster recovery, or seeding. Sessions, OAuth transactions and tokens are
   ```
 
 Import is a **merge** keyed on OAuth subject and site name: existing records are
-updated, new ones created, nothing is deleted, and imported instances that are not
-`ready` are re-queued so the worker reconciles them against the target Bench.
+updated, new ones created, and nothing is deleted. Non-ready instances are
+re-queued so the worker reconciles them against the target Bench, except instances
+captured in `deleting` state; those are imported as failed for manual review and
+are never automatically deleted or provisioned. A platform snapshot does not
+contain the Frappe database or files, and importing one does not restore a
+tenant site. Restore the corresponding full-site artifacts with a compatible
+Bench/Frappe version before treating a previously-ready instance as available.
 `--base-domain` rewrites every site hostname for a new domain. Treat snapshot
 files as sensitive: they contain account emails and ownership.
 
@@ -280,10 +308,10 @@ The worker needs filesystem access to the Bench directory, so run it **on the
 Bench host** as a dedicated, least-privileged OS user (e.g. the Frappe user). If
 the API runs elsewhere, the recommended split is: API + dashboard + PostgreSQL on
 one host, worker on the Bench host, sharing the platform database. The bundled
-compose stack does exactly this: `platform-worker` is a container built from the
-ERPNext image and mounted on the shared `sites` volume, while `platform-api` only
-needs PostgreSQL. Do not expose the Bench directory or privileged credentials to
-customers.
+compose stack does exactly this: `platform-worker` is built from the ERPNext
+image and mounted on the shared `sites` volume; `platform-api` receives only a
+read-only mount of the dedicated backup volume. Do not expose the Bench
+directory or privileged credentials to customers.
 
 ## Security notes
 
@@ -308,9 +336,17 @@ All routes except `/auth/*` and `/login` require an authenticated session.
 | `POST` | `/api/instances` | Create an instance. Body `{ "name": "Acme" }`; optional `Idempotency-Key` header. Returns `201 { instance }`. |
 | `GET` | `/api/instances` | List the caller's instances (all, for admins). |
 | `GET` | `/api/instances/:id` | Get one instance (ownership enforced). |
+| `PATCH` | `/api/instances/:id` | Update the display name only; technical site name and URL are unchanged. |
+| `DELETE` | `/api/instances/:id` | Queue permanent deletion; body must include `{ "confirmSiteName": "<exact hostname>" }`. A full backup is verified first. |
+| `GET` | `/api/instances/:id/backups` | List full database/files backups for an owned instance. |
+| `POST` | `/api/instances/:id/backups` | Queue a full Bench backup for an owned, ready instance. |
+| `GET` | `/api/site-backups` | List backups visible to the caller, including archives of deleted sites. |
+| `GET` | `/api/site-backups/:id/files/:kind` | Download the database, public-files, or private-files artifact. |
 | `POST` | `/api/admin/instances/:id/retry` | Admin: re-queue a failed instance. |
 | `GET` | `/api/admin/users` | Admin: list users. |
 | `GET` | `/api/admin/instances` | Admin: list all instances. |
+| `GET` / `PUT` | `/api/admin/site-backup-settings` | Admin: configure daily/weekly backups and the optional S3-compatible target. |
+| `GET` | `/api/admin/site-backups` | Admin: list full-site backups, including pre-deletion archives. |
 | `POST` | `/api/admin/users/:id/role` | Admin: `{ "role": "user" \| "admin" }`. |
 | `POST` | `/api/admin/users/:id/disabled` | Admin: `{ "disabled": true \| false }`. |
 | `GET` | `/api/admin/audit` | Admin: recent audit entries. |
@@ -350,6 +386,8 @@ excluded, dry-run, idempotent merge, base-domain override).
 7. Sign in, create a site, confirm it reaches `ready` and opens over HTTPS.
 8. Take an initial `pnpm backup:export` and schedule periodic snapshots; test a
    `pnpm backup:import … --dry-run` restore on a spare instance.
+9. Configure the S3 target and worker secrets if required, and ensure the
+   `frappe-backups` volume is included in off-host disaster recovery.
 
 ## Out of scope (by design)
 

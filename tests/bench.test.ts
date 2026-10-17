@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { BenchClient } from '../src/provisioning/bench.js';
 import { ExecFileRunner, redact, type CommandResult, type CommandRunner, type RunOptions } from '../src/provisioning/commands.js';
 
@@ -20,13 +23,14 @@ class RecordingRunner implements CommandRunner {
   }
 }
 
-function makeClient(): { client: BenchClient; runner: RecordingRunner } {
+function makeClient(mariadbHost?: string): { client: BenchClient; runner: RecordingRunner } {
   const runner = new RecordingRunner();
   const client = new BenchClient(runner, {
     benchBin: 'bench',
     benchPath: '/home/frappe/frappe-bench',
     mariadbRootPassword: SECRETS.root,
     erpnextAdminPassword: SECRETS.admin,
+    mariadbHost,
     erpnextApp: 'erpnext',
   });
   return { client, runner };
@@ -47,6 +51,118 @@ describe('BenchClient command construction', () => {
       '--no-mariadb-socket',
     ]);
     expect(runner.calls[0]?.options?.cwd).toBe('/home/frappe/frappe-bench');
+  });
+
+  it('uses the supported db-host option when MariaDB host is configured', async () => {
+    const { client, runner } = makeClient('frappe-db');
+    await client.newSite('acme.apps.example.test');
+    expect(runner.calls[0]?.args).toContain('--db-host');
+    expect(runner.calls[0]?.args).toContain('frappe-db');
+    expect(runner.calls[0]?.args).not.toContain('--mariadb-host');
+  });
+
+  it('creates and archives complete Bench database and file backups', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'erpnext-backup-test-'));
+    const site = 'acme.apps.example.test';
+    const source = join(root, 'sites', site, 'private', 'backups');
+    const archive = join(root, 'archive');
+    const runner = new RecordingRunner();
+    runner.run = async (file, args, options) => {
+      runner.calls.push({ file, args, options });
+      await mkdir(source, { recursive: true });
+      await Promise.all([
+        writeFile(join(source, '2026-10-17-database.sql.gz'), 'database'),
+        writeFile(join(source, '2026-10-17-files.tar'), 'public'),
+        writeFile(join(source, '2026-10-17-private-files.tar'), 'private'),
+        writeFile(join(source, '2026-10-17-site_config_backup.json'), '{}'),
+      ]);
+      return { stdout: 'Backup complete', stderr: '', code: 0, timedOut: false };
+    };
+    const client = new BenchClient(runner, {
+      benchBin: 'bench',
+      benchPath: root,
+      backupPath: archive,
+      mariadbRootPassword: SECRETS.root,
+      erpnextAdminPassword: SECRETS.admin,
+      erpnextApp: 'erpnext',
+    });
+    try {
+      const parts = await client.backupSite(site);
+      expect(parts.map((part) => part.kind).sort()).toEqual([
+        'database',
+        'private-files',
+        'public-files',
+        'site-config',
+      ]);
+      expect(await readFile(join(archive, parts[0]!.relativePath), 'utf8')).toBeTruthy();
+      expect(runner.calls[0]?.args).toEqual(['--site', site, 'backup', '--with-files']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('recognizes Frappe archives encrypted with the site backup key', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'erpnext-backup-test-'));
+    const site = 'acme.apps.example.test';
+    const source = join(root, 'sites', site, 'private', 'backups');
+    const runner = new RecordingRunner();
+    runner.run = async (file, args, options) => {
+      runner.calls.push({ file, args, options });
+      await mkdir(source, { recursive: true });
+      await Promise.all([
+        writeFile(join(source, '2026-10-17-database-enc.sql.gz'), 'database'),
+        writeFile(join(source, '2026-10-17-files-enc.tar'), 'public'),
+        writeFile(join(source, '2026-10-17-private-files-enc.tar'), 'private'),
+        writeFile(join(source, '2026-10-17-site_config_backup-enc.json'), '{}'),
+      ]);
+      return { stdout: 'Backup complete', stderr: '', code: 0, timedOut: false };
+    };
+    const client = new BenchClient(runner, {
+      benchBin: 'bench',
+      benchPath: root,
+      mariadbRootPassword: SECRETS.root,
+      erpnextAdminPassword: SECRETS.admin,
+      erpnextApp: 'erpnext',
+    });
+    try {
+      const parts = await client.backupSite(site);
+      expect(parts.map((part) => part.kind).sort()).toEqual([
+        'database',
+        'private-files',
+        'public-files',
+        'site-config',
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a successful Bench command when the private-files archive is missing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'erpnext-backup-test-'));
+    const site = 'acme.apps.example.test';
+    const source = join(root, 'sites', site, 'private', 'backups');
+    const runner = new RecordingRunner();
+    runner.run = async (file, args, options) => {
+      runner.calls.push({ file, args, options });
+      await mkdir(source, { recursive: true });
+      await Promise.all([
+        writeFile(join(source, '2026-10-17-database.sql.gz'), 'database'),
+        writeFile(join(source, '2026-10-17-files.tar'), 'public'),
+      ]);
+      return { stdout: 'Backup complete', stderr: '', code: 0, timedOut: false };
+    };
+    const client = new BenchClient(runner, {
+      benchBin: 'bench',
+      benchPath: root,
+      mariadbRootPassword: SECRETS.root,
+      erpnextAdminPassword: SECRETS.admin,
+      erpnextApp: 'erpnext',
+    });
+    try {
+      await expect(client.backupSite(site)).rejects.toThrow('private-files');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('installs an app when it is missing', async () => {

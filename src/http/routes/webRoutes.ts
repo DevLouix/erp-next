@@ -4,12 +4,25 @@ import type { AppConfig } from '../../config.js';
 import type { InstanceService } from '../../instances/instanceService.js';
 import type { AdminService } from '../../admin/adminService.js';
 import type { BackupService } from '../../admin/backupService.js';
+import type { SiteBackupService } from '../../admin/siteBackupService.js';
 import type { Store } from '../../domain/store.js';
 import type { Instance, User } from '../../domain/types.js';
+import { NotFoundError } from '../../domain/errors.js';
 import { getAuth, requireAdmin, requireAuth } from '../../auth/middleware.js';
 import { statusBadge } from '../view.js';
 
 const createFormBody = z.object({ name: z.string().optional() });
+const updateFormBody = z.object({ name: z.string().trim().min(1).max(100) });
+const deleteFormBody = z.object({ confirmSiteName: z.string().min(1) });
+const siteBackupSettingsForm = z.object({
+  automaticEnabled: z.enum(['on']).optional(),
+  intervalHours: z.enum(['24', '168']),
+  s3Endpoint: z.string().optional(),
+  s3Bucket: z.string().optional(),
+  s3Region: z.string().optional(),
+});
+const roleFormBody = z.object({ role: z.enum(['admin', 'user']) });
+const disabledFormBody = z.object({ disabled: z.enum(['true', 'false']) });
 
 function escapeHtml(value: string): string {
   return value
@@ -38,41 +51,51 @@ function layout(title: string, body: string, user?: User | null): string {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(title)} · ERPNext Hosting</title>
   <style>
-    :root { color-scheme: light dark; }
+  :root { color-scheme: light dark; --bg: #0b1220; --surface: #121e30; --surface-raised: #19283d; --line: #26364d; --text: #e6edf7; --muted: #97a8bf; --accent: #65a6ff; }
     * { box-sizing: border-box; }
-    body { font-family: system-ui, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
-    header { padding: 1rem 1.5rem; border-bottom: 1px solid #1e293b; display: flex; align-items: center; gap: 1.5rem; }
-    header h1 { font-size: 1.1rem; margin: 0; }
-    nav { display: flex; gap: 1rem; align-items: center; margin-left: auto; }
-    nav a, .link { color: #93c5fd; text-decoration: none; background: none; border: none; cursor: pointer; font: inherit; padding: 0; }
-    .who { color: #94a3b8; font-size: .85rem; }
-    .inline { display: inline; }
-    main { max-width: 900px; margin: 0 auto; padding: 2rem 1.5rem; }
-    .card { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; }
-    form.row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: end; }
-    label { display: block; font-size: .8rem; color: #94a3b8; margin-bottom: .35rem; }
-    input[type=text] { padding: .6rem .75rem; border-radius: 8px; border: 1px solid #475569; background: #0f172a; color: inherit; min-width: 260px; }
-    button[type=submit], button.action { background: #2563eb; color: white; border: none; border-radius: 8px; padding: .6rem 1rem; cursor: pointer; font: inherit; }
-    button.danger { background: #b91c1c; }
-    button.secondary { background: #334155; }
-    table { width: 100%; border-collapse: collapse; font-size: .9rem; }
-    th, td { text-align: left; padding: .55rem .5rem; border-bottom: 1px solid #334155; }
+  body { font: 15px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--text); }
+  header { min-height: 68px; padding: .8rem clamp(1rem, 4vw, 3rem); border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 1.5rem; background: var(--surface); }
+  header h1 { font-size: 1.05rem; letter-spacing: -.02em; margin: 0; white-space: nowrap; }
+  nav { display: flex; gap: 1.25rem; align-items: center; margin-left: auto; }
+  nav a, .link { color: var(--accent); text-decoration: none; background: none; border: none; cursor: pointer; font: inherit; padding: 0; }
+  nav a:hover, a:hover { text-decoration: underline; }
+  .who { color: var(--muted); font-size: .85rem; }
+  .inline { display: inline; }
+  main { max-width: 1180px; margin: 0 auto; padding: clamp(1.25rem, 4vw, 3rem); }
+  .page-heading { display: flex; justify-content: space-between; gap: 1rem; align-items: end; margin: 0 0 1.5rem; }
+  .page-heading h2 { font-size: clamp(1.5rem, 3vw, 2rem); margin: 0; letter-spacing: -.035em; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: clamp(1rem, 3vw, 1.5rem); margin-bottom: 1.25rem; box-shadow: 0 10px 30px #0002; }
+  .card h2, .card h3 { margin-top: 0; letter-spacing: -.02em; }
+  form.row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: end; }
+  label { display: block; font-size: .82rem; color: var(--muted); margin-bottom: .35rem; }
+  input[type=text], input[type=file] { padding: .68rem .8rem; border-radius: 8px; border: 1px solid #40516a; background: var(--bg); color: inherit; min-width: min(260px, 100%); font: inherit; }
+  button[type=submit], button.action { background: #2563eb; color: white; border: 1px solid #3b82f6; border-radius: 8px; padding: .65rem 1rem; cursor: pointer; font: inherit; font-weight: 600; }
+  button.danger { background: #991b1b; border-color: #dc2626; }
+  button.secondary { background: var(--surface-raised); border-color: #40516a; }
+  button:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid #60a5fa; outline-offset: 2px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  th, td { text-align: left; padding: .75rem .6rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; }
     .badge { padding: .15rem .5rem; border-radius: 999px; font-size: .75rem; font-weight: 600; }
     .badge.ready { background: #065f46; color: #a7f3d0; }
     .badge.failed { background: #7f1d1d; color: #fecaca; }
     .badge.pending { background: #78350f; color: #fde68a; }
     .error { background: #7f1d1d; border-color: #b91c1c; color: #fecaca; }
-    .muted { color: #94a3b8; font-size: .85rem; }
+    .muted { color: var(--muted); font-size: .85rem; }
     .err-text { color: #fca5a5; font-size: .85rem; }
-    a.primary { display: inline-block; background: #2563eb; color: white; border-radius: 8px; padding: .5rem .9rem; text-decoration: none; }
+    a.primary { display: inline-block; background: #2563eb; color: white; border-radius: 8px; padding: .6rem .95rem; text-decoration: none; font-weight: 600; }
+    .warning { border-color: #b45309; background: #451a03; }
+    .danger-zone { border-color: #7f1d1d; }
+    .actions { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+    .metric { display: inline-flex; gap: .35rem; align-items: baseline; padding: .4rem .7rem; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); }
     @media (prefers-color-scheme: light) {
-      body { background: #f8fafc; color: #0f172a; }
-      header { border-color: #e2e8f0; }
-      .card { background: #fff; border-color: #e2e8f0; }
-      input[type=text] { background: #fff; border-color: #cbd5e1; }
-      .muted, .who { color: #64748b; }
-      th, td { border-color: #e2e8f0; }
+      :root { --bg: #f2f6fb; --surface: #fff; --surface-raised: #eef3f9; --line: #dce4ef; --text: #172438; --muted: #5d6d82; --accent: #1d4ed8; }
+      .warning { background: #fffbeb; color: #78350f; }
+      input[type=text], input[type=file] { border-color: #cbd5e1; }
+      .secondary { color: #172438 !important; }
     }
+    @media (max-width: 640px) { header { align-items: flex-start; flex-wrap: wrap; } nav { margin-left: 0; width: 100%; flex-wrap: wrap; } .page-heading { align-items: flex-start; flex-direction: column; } main { padding: 1rem; } }
   </style>
 </head>
 <body>
@@ -87,10 +110,11 @@ function layout(title: string, body: string, user?: User | null): string {
 
 function instanceRow(instance: Instance): string {
   return `<tr>
+    <td>${escapeHtml(instance.companyName)}</td>
     <td>${escapeHtml(instance.hostname)}</td>
     <td>${statusBadge(instance.status)}</td>
     <td class="muted">${instance.createdAt.toISOString()}</td>
-    <td><a href="/dashboard/instances/${encodeURIComponent(instance.id)}">View</a></td>
+    <td><a href="/dashboard/instances/${encodeURIComponent(instance.id)}">Manage</a></td>
   </tr>`;
 }
 
@@ -102,9 +126,10 @@ export function registerWebRoutes(
     instanceService: InstanceService;
     adminService: AdminService;
     backupService: BackupService;
+    siteBackupService: SiteBackupService;
   },
 ): void {
-  const { config, store, instanceService, adminService, backupService } = deps;
+  const { config, store, instanceService, adminService, backupService, siteBackupService } = deps;
 
   app.get('/', async (request, reply) => {
     await reply.redirect(request.auth ? '/dashboard' : '/login', 302);
@@ -128,13 +153,36 @@ export function registerWebRoutes(
   app.get('/dashboard', { preHandler: requireAuth }, async (request, reply) => {
     const { user } = getAuth(request);
     const instances = await instanceService.listFor(user);
+    const userBackups = await siteBackupService.listVisible(user);
     const rows =
       instances.length > 0
         ? instances.map(instanceRow).join('')
-        : '<tr><td colspan="4" class="muted">No instances yet.</td></tr>';
+        : '<tr><td colspan="5" class="muted">No instances yet.</td></tr>';
+    const query = request.query as { error?: string };
+    const errorBox = query.error
+      ? `<div class="card error" role="alert">${escapeHtml(query.error)}</div>`
+      : '';
+    const recentBackupRows = userBackups.length
+      ? userBackups.slice(0, 20).map((backup) => {
+          const links = backup.parts
+            .map((part) => `<a href="/api/site-backups/${encodeURIComponent(backup.id)}/files/${part.kind}">${escapeHtml(part.kind)}</a>`)
+            .join(' · ');
+          const details = [
+            links,
+            backup.errorMessage ? `<span class="err-text">${escapeHtml(backup.errorMessage)}</span>` : '',
+            !links && !backup.errorMessage ? 'Waiting for worker' : '',
+          ].filter(Boolean).join('<br>');
+          return `<tr><td>${escapeHtml(backup.hostname)}</td><td>${backup.createdAt.toISOString()}</td><td>${escapeHtml(backup.status)}</td><td>${details}</td></tr>`;
+        }).join('')
+      : '<tr><td colspan="4" class="muted">No tenant backups are available.</td></tr>';
     const body = `
+      ${errorBox}
+      <div class="page-heading">
+        <div><p class="muted">ERPNext Hosting Console</p><h2>Workspace</h2></div>
+        <span class="metric">${instances.length} ${instances.length === 1 ? 'instance' : 'instances'}</span>
+      </div>
       <div class="card">
-        <h2>Create a site</h2>
+        <h2>Provision a workspace</h2>
         <form class="row" method="post" action="/dashboard/instances">
           <div>
             <label for="name">Company / site name</label>
@@ -142,16 +190,22 @@ export function registerWebRoutes(
           </div>
           <button type="submit">Create instance</button>
         </form>
-        <p class="muted">Your site is provisioned automatically on the shared ERPNext server.</p>
+        <p class="muted">A dedicated ERPNext site and database will be provisioned for your organization.</p>
       </div>
       <div class="card">
         <h2>Your instances</h2>
-        <table>
-          <thead><tr><th>Hostname</th><th>Status</th><th>Created</th><th></th></tr></thead>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Workspace</th><th>Hostname</th><th>Status</th><th>Created</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
-        </table>
+        </table></div>
       </div>`;
-    reply.type('text/html').send(layout('Dashboard', body, user));
+    const backupCard = `
+      <div class="card">
+        <h2>Recent tenant backups</h2>
+        <p class="muted">These archives remain available after an instance is removed.</p>
+        <div class="table-wrap"><table><thead><tr><th>Site</th><th>Created</th><th>Status</th><th>Files</th></tr></thead><tbody>${recentBackupRows}</tbody></table></div>
+      </div>`;
+    reply.type('text/html').send(layout('Dashboard', `${body}${backupCard}`, user));
   });
 
   app.post('/dashboard/instances', { preHandler: requireAuth }, async (request, reply) => {
@@ -175,13 +229,20 @@ export function registerWebRoutes(
     let instance: Instance;
     try {
       instance = await instanceService.getFor(user, id);
-    } catch {
+    } catch (err) {
+      if (!(err instanceof NotFoundError)) throw err;
       reply.code(404).type('text/html').send(layout('Not found', '<div class="card">Instance not found.</div>', user));
       return;
     }
     const latestJob = await store.findLatestJobForInstance(instance.id);
+    const siteBackups = await siteBackupService.listFor(user, instance.id);
     const ready = instance.status === 'ready';
     const failed = instance.status === 'failed';
+    const canDelete = ready || failed;
+    const pageQuery = request.query as { error?: string };
+    const errorBox = pageQuery.error
+      ? `<div class="card error" role="alert">${escapeHtml(pageQuery.error)}</div>`
+      : '';
     const urlLine = ready
       ? `<p><a class="primary" href="https://${escapeHtml(instance.hostname)}" target="_blank" rel="noopener">Open ERPNext</a></p>`
       : '';
@@ -198,17 +259,110 @@ export function registerWebRoutes(
       })();
       </script>`
       : '';
+    const backupRows = siteBackups.length
+      ? siteBackups.map((backup) => {
+          const fileLinks = backup.parts
+            .map((part) => `<a href="/api/site-backups/${encodeURIComponent(backup.id)}/files/${part.kind}">${escapeHtml(part.kind)} (${Math.ceil(part.sizeBytes / 1024)} KB)</a>`)
+            .join(' · ');
+          const details = [
+            fileLinks,
+            backup.errorMessage ? `<span class="err-text">${escapeHtml(backup.errorMessage)}</span>` : '',
+            !fileLinks && !backup.errorMessage ? 'Waiting for worker' : '',
+          ].filter(Boolean).join('<br>');
+          return `<tr><td>${backup.createdAt.toISOString()}</td><td>${statusBadge(backup.status === 'completed' ? 'ready' : backup.status === 'failed' ? 'failed' : 'provisioning')}</td><td>${details}</td></tr>`;
+        }).join('')
+      : '<tr><td colspan="3" class="muted">No full-site backups yet.</td></tr>';
+    const backupPending = siteBackups.some((backup) => backup.status === 'queued' || backup.status === 'running');
+    const backupPoll = backupPending ? '<script>setTimeout(function(){ location.reload(); }, 5000);</script>' : '';
     const body = `
-      <div class="card">
-        <h2>${escapeHtml(instance.hostname)}</h2>
-        <p>Status: ${statusBadge(instance.status)}</p>
+      ${errorBox}
+      <div class="page-heading">
+        <div><p class="muted">Workspace details</p><h2>${escapeHtml(instance.companyName)}</h2></div>
         ${urlLine}
+      </div>
+      <div class="card">
+        <p class="muted">${escapeHtml(instance.hostname)} · ${escapeHtml(instance.siteName)}</p>
+        <p>Status: ${statusBadge(instance.status)}</p>
         ${errorLine}
-        <p class="muted">Attempts: ${latestJob?.attempts ?? 0} / ${latestJob?.maxAttempts ?? 0}</p>
+        <p class="muted">Provisioning attempts: ${latestJob?.attempts ?? 0} / ${latestJob?.maxAttempts ?? 0}</p>
         <p><a href="/dashboard">Back to dashboard</a></p>
         ${poll}
       </div>`;
-    reply.type('text/html').send(layout(instance.hostname, body, user));
+    const editableBody = `
+      <div class="card">
+        <h3>Workspace settings</h3>
+        <form class="row" method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/update">
+          <div>
+            <label for="companyName">Display name</label>
+            <input id="companyName" type="text" name="name" value="${escapeHtml(instance.companyName)}" maxlength="100" required ${instance.status === 'deleting' ? 'disabled' : ''}>
+          </div>
+          <button class="action secondary" type="submit" ${instance.status === 'deleting' ? 'disabled' : ''}>Save changes</button>
+        </form>
+        <p class="muted">Changing this label does not rename your ERPNext site or change its URL.</p>
+      </div>
+      <div class="card">
+        <div class="page-heading"><div><h3>Full-site backups</h3><p class="muted">Includes the MariaDB database and public/private files. Completed backups are stored on the persistent backup volume.</p></div>
+          <form method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/backups">
+            <button class="action secondary" type="submit" ${instance.status !== 'ready' ? 'disabled' : ''}>Create backup</button>
+          </form>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>Created</th><th>Status</th><th>Files / details</th></tr></thead><tbody>${backupRows}</tbody></table></div>
+        ${backupPoll}
+      </div>
+      ${
+        canDelete
+          ? `<div class="card danger-zone">
+        <h3>Danger zone</h3>
+        <p class="err-text">Permanent deletion removes the ERPNext site, its MariaDB database, and its uploaded files. This cannot be undone. Download a full site backup first.</p>
+        <form class="row" method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/delete" onsubmit="return confirm('This permanently deletes all ERPNext data for ${escapeHtml(instance.hostname)}. Continue?')">
+          <div>
+            <label for="confirmSiteName">Type ${escapeHtml(instance.hostname)} to confirm</label>
+            <input id="confirmSiteName" type="text" name="confirmSiteName" autocomplete="off" required>
+          </div>
+          <button class="action danger" type="submit">Permanently delete site</button>
+        </form>
+      </div>`
+          : ''
+      }`;
+    reply.type('text/html').send(layout(instance.hostname, `${body}${editableBody}`, user));
+  });
+
+  app.post('/dashboard/instances/:id/update', { preHandler: requireAuth }, async (request, reply) => {
+    const { user } = getAuth(request);
+    const { id } = request.params as { id: string };
+    const body = updateFormBody.parse(request.body ?? {});
+    try {
+      await instanceService.updateFor(user, id, body.name);
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}`, 303);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not update instance';
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}?error=${encodeURIComponent(message)}`, 303);
+    }
+  });
+
+  app.post('/dashboard/instances/:id/delete', { preHandler: requireAuth }, async (request, reply) => {
+    const { user } = getAuth(request);
+    const { id } = request.params as { id: string };
+    const body = deleteFormBody.parse(request.body ?? {});
+    try {
+      await instanceService.deleteFor(user, id, body.confirmSiteName);
+      await reply.redirect('/dashboard', 303);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not delete instance';
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}?error=${encodeURIComponent(message)}`, 303);
+    }
+  });
+
+  app.post('/dashboard/instances/:id/backups', { preHandler: requireAuth }, async (request, reply) => {
+    const { user } = getAuth(request);
+    const { id } = request.params as { id: string };
+    try {
+      await siteBackupService.request(user, id);
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}`, 303);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not start site backup';
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}?error=${encodeURIComponent(message)}`, 303);
+    }
   });
 
   app.get('/admin', { preHandler: [requireAuth, requireAdmin] }, async (request, reply) => {
@@ -217,6 +371,12 @@ export function registerWebRoutes(
     const instances = await adminService.listInstances(user);
     const audit = await adminService.listAudit(user, 50);
     const backups = await backupService.listBackups(user);
+    const siteBackups = await siteBackupService.listAllForAdmin(user);
+    const siteBackupSettings = await siteBackupService.getSettings(user);
+    const adminQuery = request.query as { error?: string };
+    const adminError = adminQuery.error
+      ? `<div class="card error" role="alert">${escapeHtml(adminQuery.error)}</div>`
+      : '';
 
     const userRows = users
       .map(
@@ -241,10 +401,12 @@ export function registerWebRoutes(
     const instanceRows = instances
       .map(
         (i) => `<tr>
+        <td>${escapeHtml(i.companyName)}</td>
         <td>${escapeHtml(i.hostname)}</td>
         <td>${statusBadge(i.status)}</td>
         <td class="muted">${i.ownerUserId}</td>
         <td>
+          <a href="/dashboard/instances/${encodeURIComponent(i.id)}">Manage</a>
           <form method="post" action="/admin/instances/${encodeURIComponent(i.id)}/retry" class="inline">
             <button class="action secondary" type="submit">Retry</button>
           </form>
@@ -286,11 +448,49 @@ export function registerWebRoutes(
       backups.length > 0
         ? `<table><thead><tr><th>Label</th><th>Counts</th><th>Created</th><th></th></tr></thead><tbody>${backupRows}</tbody></table>`
         : '<p class="muted">No stored backups yet.</p>';
+    const siteBackupRows = siteBackups.length
+      ? siteBackups.map((backup) => {
+          const files = backup.parts
+            .map((part) => `<a href="/api/site-backups/${encodeURIComponent(backup.id)}/files/${part.kind}">${escapeHtml(part.kind)}</a>`)
+            .join(' · ');
+        const details = [
+          files,
+          backup.errorMessage ? `<span class="err-text">${escapeHtml(backup.errorMessage)}</span>` : '',
+          !files && !backup.errorMessage ? 'Queued' : '',
+        ].filter(Boolean).join('<br>');
+        return `<tr><td>${escapeHtml(backup.hostname)}</td><td>${backup.createdAt.toISOString()}</td><td>${escapeHtml(backup.status)}</td><td>${details}</td></tr>`;
+        }).join('')
+      : '<tr><td colspan="4" class="muted">No tenant backups yet.</td></tr>';
 
     const body = `
+      ${adminError}
+      <div class="page-heading"><div><p class="muted">Operations &amp; governance</p><h2>Administration</h2></div></div>
+      <div class="card">
+        <h2>Tenant data backups</h2>
+        <p class="muted">Full Bench archives include tenant database and files. Backups are retained on persistent storage; no automatic retention deletion is configured.</p>
+        <div class="table-wrap"><table><thead><tr><th>Site</th><th>Created</th><th>Status</th><th>Download</th></tr></thead><tbody>${siteBackupRows}</tbody></table></div>
+      </div>
+      <div class="card">
+        <h2>Tenant backup policy</h2>
+        <form method="post" action="/admin/site-backup-settings" class="row">
+          <div>
+            <label><input type="checkbox" name="automaticEnabled" value="on" ${siteBackupSettings.automaticEnabled ? 'checked' : ''}> Enable automatic full-site backups</label>
+            <label for="backupInterval">Schedule</label>
+            <select id="backupInterval" name="intervalHours">
+              <option value="24" ${siteBackupSettings.intervalHours === 24 ? 'selected' : ''}>Daily</option>
+              <option value="168" ${siteBackupSettings.intervalHours === 168 ? 'selected' : ''}>Weekly</option>
+            </select>
+          </div>
+          <div><label for="s3Endpoint">S3-compatible endpoint (optional)</label><input id="s3Endpoint" type="text" name="s3Endpoint" value="${escapeHtml(siteBackupSettings.s3Endpoint ?? '')}" placeholder="https://s3.example.com"></div>
+          <div><label for="s3Bucket">Bucket</label><input id="s3Bucket" type="text" name="s3Bucket" value="${escapeHtml(siteBackupSettings.s3Bucket ?? '')}" placeholder="erpnext-backups"></div>
+          <div><label for="s3Region">Region</label><input id="s3Region" type="text" name="s3Region" value="${escapeHtml(siteBackupSettings.s3Region ?? '')}" placeholder="us-east-1"></div>
+          <button class="action" type="submit">Save backup policy</button>
+        </form>
+        <p class="muted">S3 credentials are never stored in the platform database. Configure AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in the worker's deployment secrets. Local full backups remain available if remote upload fails. Next run: ${siteBackupSettings.nextRunAt?.toISOString() ?? 'not scheduled'}.</p>
+      </div>
       <div class="card">
         <h2>Backup &amp; restore</h2>
-        <p class="muted">Snapshots contain platform state (accounts, ownership, instances, jobs) — never sessions or tokens.</p>
+        <p class="muted">Platform snapshots contain accounts, ownership, instances and jobs — never sessions, tokens, or ERPNext business data.</p>
         <p class="row" style="align-items:center">
           <a class="primary" href="/api/admin/backup/export">Download current state</a>
           <form method="post" action="/admin/backup" class="inline row" style="align-items:center">
@@ -314,7 +514,7 @@ export function registerWebRoutes(
       </div>
       <div class="card">
         <h2>All instances</h2>
-        <table><thead><tr><th>Hostname</th><th>Status</th><th>Owner</th><th></th></tr></thead><tbody>${instanceRows}</tbody></table>
+        <div class="table-wrap"><table><thead><tr><th>Workspace</th><th>Hostname</th><th>Status</th><th>Owner</th><th>Actions</th></tr></thead><tbody>${instanceRows}</tbody></table></div>
       </div>
       <div class="card">
         <h2>Recent activity</h2>
@@ -358,37 +558,41 @@ export function registerWebRoutes(
     const { id } = request.params as { id: string };
     try {
       await adminService.retryInstance(user, id);
-    } catch {
-      // Surface nothing here; the admin page reflects the resulting state.
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not retry instance';
+      await reply.redirect(`/admin?error=${encodeURIComponent(message)}`, 303);
+      return;
     }
-    await reply.redirect('/admin', 302);
+    await reply.redirect('/admin', 303);
   });
 
   app.post('/admin/users/:id/role', { preHandler: [requireAuth, requireAdmin] }, async (request, reply) => {
     const { user } = getAuth(request);
     const { id } = request.params as { id: string };
-    const body = request.body as { role?: string } | undefined;
-    if (body?.role === 'admin' || body?.role === 'user') {
-      try {
-        await adminService.setUserRole(user, id, body.role);
-      } catch {
-        /* ignore, page reflects state */
-      }
+    try {
+      const body = roleFormBody.parse(request.body ?? {});
+      await adminService.setUserRole(user, id, body.role);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not update user role';
+      await reply.redirect(`/admin?error=${encodeURIComponent(message)}`, 303);
+      return;
     }
-    await reply.redirect('/admin', 302);
+    await reply.redirect('/admin', 303);
   });
 
   app.post('/admin/users/:id/disabled', { preHandler: [requireAuth, requireAdmin] }, async (request, reply) => {
     const { user } = getAuth(request);
     const { id } = request.params as { id: string };
-    const body = request.body as { disabled?: string } | undefined;
-    const disabled = body?.disabled === 'true';
     try {
+      const body = disabledFormBody.parse(request.body ?? {});
+      const disabled = body.disabled === 'true';
       await adminService.setUserDisabled(user, id, disabled);
-    } catch {
-      /* ignore */
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not update user status';
+      await reply.redirect(`/admin?error=${encodeURIComponent(message)}`, 303);
+      return;
     }
-    await reply.redirect('/admin', 302);
+    await reply.redirect('/admin', 303);
   });
 
   app.post('/admin/backup', { preHandler: [requireAuth, requireAdmin] }, async (request, reply) => {
@@ -396,10 +600,30 @@ export function registerWebRoutes(
     const body = request.body as { label?: string } | undefined;
     try {
       await backupService.createBackup(user, body?.label ?? null);
-    } catch {
-      /* ignore */
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not create platform snapshot';
+      await reply.redirect(`/admin?error=${encodeURIComponent(message)}`, 303);
+      return;
     }
-    await reply.redirect('/admin', 302);
+    await reply.redirect('/admin', 303);
+  });
+
+  app.post('/admin/site-backup-settings', { preHandler: [requireAuth, requireAdmin] }, async (request, reply) => {
+    const { user } = getAuth(request);
+    const body = siteBackupSettingsForm.parse(request.body ?? {});
+    try {
+      await siteBackupService.updateSettings(user, {
+        automaticEnabled: body.automaticEnabled === 'on',
+        intervalHours: Number(body.intervalHours),
+        s3Endpoint: body.s3Endpoint?.trim() || null,
+        s3Bucket: body.s3Bucket?.trim() || null,
+        s3Region: body.s3Region?.trim() || null,
+      });
+      await reply.redirect('/admin', 303);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not update backup policy';
+      await reply.redirect(`/admin?error=${encodeURIComponent(message)}`, 303);
+    }
   });
 
   app.post(
@@ -411,10 +635,12 @@ export function registerWebRoutes(
       try {
         const backup = await backupService.getBackup(user, id);
         await backupService.importState(user, backup.payload, { dryRun: false });
-      } catch {
-        /* ignore; page reflects state */
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Could not restore platform snapshot';
+        await reply.redirect(`/admin?error=${encodeURIComponent(message)}`, 303);
+        return;
       }
-      await reply.redirect('/admin', 302);
+      await reply.redirect('/admin', 303);
     },
   );
 
@@ -426,10 +652,12 @@ export function registerWebRoutes(
       const { id } = request.params as { id: string };
       try {
         await backupService.deleteBackup(user, id);
-      } catch {
-        /* ignore */
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Could not delete platform snapshot';
+        await reply.redirect(`/admin?error=${encodeURIComponent(message)}`, 303);
+        return;
       }
-      await reply.redirect('/admin', 302);
+      await reply.redirect('/admin', 303);
     },
   );
 }

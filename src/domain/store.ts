@@ -1,5 +1,6 @@
 import type {
   AuditLogEntry,
+  EncryptedSiteBackupCredentials,
   BackupSnapshot,
   BackupSnapshotMeta,
   CreateInstanceInput,
@@ -87,7 +88,9 @@ export interface Store {
       'automaticEnabled' | 'intervalHours' | 's3Endpoint' | 's3Bucket' | 's3Region'
     >,
     now: Date,
+    credentials?: EncryptedSiteBackupCredentials | null,
   ): Promise<SiteBackupSettings>;
+  getSiteBackupCredentials(): Promise<EncryptedSiteBackupCredentials | null>;
   queueScheduledSiteBackups(now: Date, maxAttempts: number): Promise<number>;
   /** Create or update an instance by its (unique) site name — used by restore. */
   importInstance(input: ImportInstanceInput): Promise<Instance>;

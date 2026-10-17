@@ -39,6 +39,8 @@ const envSchema = z.object({
   PUBLIC_BASE_URL: z.string().url(),
 
   DATABASE_URL: z.string().min(1),
+  BACKUP_CREDENTIALS_ENCRYPTION_KEY: z.string().optional(),
+  HEALTHCHECK_BASE_URL: z.string().url().optional(),
 
   SESSION_COOKIE_SECRET: z.string().min(32, 'SESSION_COOKIE_SECRET must be at least 32 characters'),
   SESSION_COOKIE_NAME: z.string().default('erpnext_platform_session'),
@@ -64,7 +66,7 @@ const envSchema = z.object({
 
   PROVISION_MAX_ATTEMPTS: intString(5),
   PROVISION_LOCK_TIMEOUT_MS: intString(15 * 60 * 1000),
-  // How to treat a failure of `bench setup nginx` / reload:
+  // How to treat a failure of `bench setup nginx`:
   //   strict      — fail the attempt (single host where bench owns nginx)
   //   best-effort — log and continue; the health check is the real gate
   //   skip        — do not regenerate nginx at all
@@ -109,6 +111,7 @@ export function testConfig(overrides: Partial<Record<keyof AppConfig, unknown>> 
     PUBLIC_BASE_URL: 'http://localhost:3000',
     DATABASE_URL: 'postgresql://erpnext:erpnext@localhost:5433/erpnext_platform_test',
     SESSION_COOKIE_SECRET: 'test-secret-test-secret-test-secret-32',
+    BACKUP_CREDENTIALS_ENCRYPTION_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
     COOKIE_SECURE: 'false',
     TRUEMOI_CLIENT_ID: 'test-client',
     TRUEMOI_AUTH_DOMAIN: 'auth.example.test',

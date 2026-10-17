@@ -151,7 +151,13 @@ export interface SiteBackupSettings {
   s3Endpoint: string | null;
   s3Bucket: string | null;
   s3Region: string | null;
+  s3CredentialsConfigured: boolean;
   updatedAt: Date;
+}
+
+export interface EncryptedSiteBackupCredentials {
+  accessKeyCiphertext: string;
+  secretKeyCiphertext: string;
 }
 
 // ── Backups ────────────────────────────────────────────────────────────────

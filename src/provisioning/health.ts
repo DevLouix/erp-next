@@ -1,6 +1,7 @@
 export interface HealthCheckOptions {
   timeoutMs: number;
   intervalMs: number;
+  baseUrl?: string;
   fetchImpl?: typeof fetch;
   sleepImpl?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -20,16 +21,18 @@ export async function waitForHealthy(
   const sleep = options.sleepImpl ?? defaultSleep;
   const now = options.now ?? (() => Date.now());
   const deadline = now() + options.timeoutMs;
-  const url = `https://${hostname}/api/method/ping`;
+  const url = new URL('/api/method/ping', options.baseUrl ?? `https://${hostname}`).toString();
   let lastError = 'no response';
 
   for (;;) {
     try {
-      const res = await fetchImpl(url, { redirect: 'manual' });
+      const res = await fetchImpl(url, {
+        redirect: 'manual',
+        headers: { host: hostname },
+      });
       if (res.ok) {
         const body = (await res.json().catch(() => null)) as { message?: string } | null;
-        if (body?.message === 'pong' || body?.message === 'pong') return;
-        if (body?.message) return;
+        if (body?.message === 'pong') return;
       } else {
         lastError = `HTTP ${res.status}`;
       }

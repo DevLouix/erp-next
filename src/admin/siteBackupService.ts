@@ -10,6 +10,7 @@ import type {
 } from '../domain/types.js';
 import { ForbiddenError, NotFoundError, ValidationError } from '../domain/errors.js';
 import type { InstanceService } from '../instances/instanceService.js';
+import { encryptCredential } from './credentialEncryption.js';
 
 const partKinds: SiteBackupPartKind[] = [
   'database',
@@ -72,16 +73,21 @@ export class SiteBackupService {
     input: Pick<
       SiteBackupSettings,
       'automaticEnabled' | 'intervalHours' | 's3Endpoint' | 's3Bucket' | 's3Region'
-    >,
+    > & {
+      s3AccessKeyId?: string;
+      s3SecretAccessKey?: string;
+      clearS3Credentials?: boolean;
+    },
   ): Promise<SiteBackupSettings> {
     this.assertAdmin(actor);
     if (![24, 168].includes(input.intervalHours)) {
       throw new ValidationError('Automatic backup interval must be daily or weekly');
     }
-    const hasEndpoint = Boolean(input.s3Endpoint);
-    const hasBucket = Boolean(input.s3Bucket);
-    if (hasEndpoint !== hasBucket) {
-      throw new ValidationError('Configure both an S3 endpoint and bucket, or leave both empty');
+    const s3Fields = [input.s3Endpoint, input.s3Bucket, input.s3Region];
+    const hasSomeS3Settings = s3Fields.some(Boolean);
+    const hasAllS3Settings = s3Fields.every(Boolean);
+    if (hasSomeS3Settings !== hasAllS3Settings) {
+      throw new ValidationError('Configure the S3 endpoint, bucket, and region together, or leave all empty');
     }
     if (input.s3Endpoint) {
       let endpoint: URL;
@@ -99,7 +105,46 @@ export class SiteBackupService {
       }
       if (!input.s3Region?.trim()) throw new ValidationError('S3 region is required');
     }
-    const settings = await this.store.updateSiteBackupSettings(input, new Date());
+    const hasAccessKey = Boolean(input.s3AccessKeyId);
+    const hasSecretKey = Boolean(input.s3SecretAccessKey);
+    if (hasAccessKey !== hasSecretKey) {
+      throw new ValidationError('Provide both the S3 access key ID and secret access key');
+    }
+    if (input.clearS3Credentials && hasAccessKey) {
+      throw new ValidationError('Choose either new S3 credentials or clear existing credentials');
+    }
+    const currentSettings = await this.store.getSiteBackupSettings();
+    if (input.clearS3Credentials && hasAllS3Settings) {
+      throw new ValidationError('S3 credentials are required while an S3 backup target is configured');
+    }
+    if (hasAllS3Settings && !hasAccessKey && !currentSettings.s3CredentialsConfigured) {
+      throw new ValidationError('Enter S3 credentials before enabling the S3 backup target');
+    }
+    let credentials;
+    if (hasAccessKey) {
+      try {
+        credentials = {
+          accessKeyCiphertext: encryptCredential(
+            input.s3AccessKeyId!,
+            this.config.BACKUP_CREDENTIALS_ENCRYPTION_KEY,
+          ),
+          secretKeyCiphertext: encryptCredential(
+            input.s3SecretAccessKey!,
+            this.config.BACKUP_CREDENTIALS_ENCRYPTION_KEY,
+          ),
+        };
+      } catch (err) {
+        throw new ValidationError(err instanceof Error ? err.message : 'Could not encrypt S3 credentials');
+      }
+    } else {
+      credentials = input.clearS3Credentials ? null : undefined;
+    }
+    const { s3AccessKeyId: _accessKey, s3SecretAccessKey: _secretKey, clearS3Credentials: _clear, ...settingsInput } = input;
+    const settings = await this.store.updateSiteBackupSettings(
+      settingsInput,
+      new Date(),
+      credentials,
+    );
     await this.store.recordAudit({
       actorUserId: actor.id,
       action: 'site_backup.settings_update',

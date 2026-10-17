@@ -93,6 +93,8 @@ model SiteBackupSettings {
   s3Endpoint        String?   @map("s3_endpoint")
   s3Bucket          String?   @map("s3_bucket")
   s3Region          String?   @map("s3_region")
+  s3AccessKeyCiphertext String? @map("s3_access_key_ciphertext")
+  s3SecretKeyCiphertext String? @map("s3_secret_key_ciphertext")
   updatedAt         DateTime  @updatedAt @map("updated_at")
 
   @@map("site_backup_settings")

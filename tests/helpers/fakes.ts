@@ -134,6 +134,7 @@ export class FakeBench implements ProvisioningBench {
     backupId: string,
     parts: SiteBackupPart[],
     _target: Pick<SiteBackupSettings, 's3Endpoint' | 's3Bucket' | 's3Region'>,
+    _credentials: { accessKeyId: string; secretAccessKey: string },
   ): Promise<SiteBackupPart[]> {
     this.calls.push({ op: 'upload-backup', args: [siteName, backupId] });
     this.maybeFail('uploadBackup');

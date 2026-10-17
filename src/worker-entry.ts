@@ -28,6 +28,7 @@ async function main(): Promise<void> {
       waitForHealthy(hostname, {
         timeoutMs: config.HEALTHCHECK_TIMEOUT_MS,
         intervalMs: config.HEALTHCHECK_INTERVAL_MS,
+        baseUrl: config.HEALTHCHECK_BASE_URL,
       }),
   };
 

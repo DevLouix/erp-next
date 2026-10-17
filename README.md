@@ -86,10 +86,9 @@ Bench. Under the pinned Compose project name (`COMPOSE_PROJECT_NAME`, default
 
 The Frappe services follow the upstream
 [`frappe_docker`](https://github.com/frappe/frappe_docker) `pwd.yml`; pin
-`ERPNEXT_VERSION` in `.env` to the version you deploy. The worker regenerates
-nginx vhosts best-effort (`PROVISION_ROUTING_MODE=best-effort`) because nginx runs
-as the separate `frappe-frontend` service and the **HTTP health check is the real
-gate**.
+`ERPNEXT_VERSION` in `.env` to the version you deploy. The bundled worker skips
+Bench nginx setup because the separate `frappe-frontend` ingress routes by Host;
+it checks site health over the internal Compose network.
 
 ### Deploying with `deploy.sh`
 
@@ -185,7 +184,7 @@ ones:
 | `BENCH_PATH` / `BENCH_BIN` | Bench directory and binary on the worker host. |
 | `MARIADB_HOST` | MariaDB hostname passed to `bench new-site` as `--db-host` (for example, `frappe-db`). |
 | `MARIADB_ROOT_PASSWORD` / `ERPNEXT_ADMIN_PASSWORD` | Used by `bench new-site`; never logged. |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Optional worker deployment secrets for S3-compatible full-site backup uploads; never stored in the platform database. |
+| `BACKUP_CREDENTIALS_ENCRYPTION_KEY` | Persistent base64-encoded 32-byte key used by API and worker to encrypt/decrypt S3 credentials stored in PostgreSQL. Generate with `openssl rand -base64 32`; do not rotate without re-entering credentials. |
 
 ## Authentication (Truemoi)
 
@@ -230,9 +229,10 @@ Permanent deletion transitions through `deleting`.
 - The worker claims one job atomically, then runs:
   `bench new-site` → `bench --site <s> install-app erpnext` (only if missing) →
   `bench --site <s> set-config host_name https://<hostname>` →
-  `bench setup nginx` + `bench reload-nginx` (see `PROVISION_ROUTING_MODE`) →
-  HTTPS health check (`/api/method/ping`). Only a passing health check marks the
-  site `ready`.
+  optional `bench setup nginx` for deployments where Bench owns nginx →
+  health check (`/api/method/ping`). In Compose the worker checks
+  `http://frappe-frontend:8080` with the site hostname as the HTTP `Host` header.
+  Only a passing health check marks the site `ready`.
 - Failures record a **redacted** error, clean up the partial site, and retry with
   exponential backoff up to `PROVISION_MAX_ATTEMPTS`. Stale/locked jobs (worker
   crash) are recovered on the next loop. Duplicate requests are prevented by
@@ -243,8 +243,10 @@ Permanent deletion transitions through `deleting`.
 
 - Create a wildcard DNS record `*.${PROVISIONING_BASE_DOMAIN}` → the server that
   runs nginx/Frappe.
-- The worker runs `bench setup nginx` (which writes a vhost per site) and reloads
-  nginx after configuring the hostname.
+- In Compose, the separate `frappe-frontend` uses the incoming Host header for
+  site routing, so Bench nginx configuration/reload is skipped. Other topologies
+  may set `PROVISION_ROUTING_MODE` to `best-effort` or `strict`; `bench setup
+  nginx` generates files but does not reload a separately managed ingress.
 - Terminate TLS with a wildcard certificate for `*.${PROVISIONING_BASE_DOMAIN}`
   at the existing reverse proxy (or via `bench setup lets-encrypt` if that matches
   your deployment). The platform itself should also be served over HTTPS in
@@ -262,9 +264,12 @@ A backup is accepted only when all four artifacts are present and non-empty, and
 artifacts are published to the archive volume only after their copied sizes are
 verified. Users can request one from the instance page;
 administrators can enable daily or weekly automatic backups and configure an
-S3-compatible endpoint, bucket and region. AWS credentials are supplied to the
-worker as deployment secrets, never saved by the UI. S3 uploads request server-side
-AES-256 encryption. The site configuration contains database/encryption secrets,
+S3-compatible endpoint, bucket, region, access key ID, and secret access key
+through the admin panel. Credentials are encrypted with AES-256-GCM before they
+are persisted in PostgreSQL and are never returned by the settings API. Set the
+same `BACKUP_CREDENTIALS_ENCRYPTION_KEY` deployment secret on the API and worker;
+generate it with `openssl rand -base64 32` and keep it backed up. S3 uploads also
+request server-side AES-256 encryption. The site configuration contains database/encryption secrets,
 so it is downloadable by administrators only; tenant owners can still download
 the database and files. Local archives are retained on the persistent
 `frappe-backups` volume. Automatic retention deletion is

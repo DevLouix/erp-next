@@ -17,6 +17,9 @@ const siteBackupSettingsBody = z.object({
   s3Endpoint: z.string().trim().nullable().optional().transform((value) => value || null),
   s3Bucket: z.string().trim().nullable().optional().transform((value) => value || null),
   s3Region: z.string().trim().nullable().optional().transform((value) => value || null),
+  s3AccessKeyId: z.string().max(1024).optional(),
+  s3SecretAccessKey: z.string().max(4096).optional(),
+  clearS3Credentials: z.boolean().optional(),
 });
 const importBody = z.object({
   snapshot: z.unknown().optional(),

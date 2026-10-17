@@ -195,6 +195,12 @@ describe('BenchClient command construction', () => {
     ]);
   });
 
+  it('does not call the removed reload-nginx Bench command', async () => {
+    const { client, runner } = makeClient();
+    await client.configureRouting();
+    expect(runner.calls.map((call) => call.args)).toEqual([['setup', 'nginx']]);
+  });
+
   it('redacts credentials from failure messages', async () => {
     const { client, runner } = makeClient();
     runner.responses.push({

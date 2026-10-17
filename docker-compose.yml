@@ -78,9 +78,9 @@ services:
       dockerfile: docker/worker.Dockerfile
       args:
         ERPNEXT_VERSION: ${ERPNEXT_VERSION:-v16.51.1}
-    # The background worker does not serve assets; skip the Frappe entrypoint's
-    # shared sites/assets symlink step so worker restarts do not contend with it.
-    entrypoint: ["/bin/bash", "-lc"]
+    # Skip Frappe's asset-link entrypoint; a non-login shell preserves the
+    # image PATH so the installed pnpm executable remains available.
+    entrypoint: ["/bin/bash", "-c"]
     command: ["umask 0002; exec pnpm worker"]
     restart: unless-stopped
     networks: [erpnext]

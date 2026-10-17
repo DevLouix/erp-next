@@ -238,6 +238,8 @@ export function registerWebRoutes(
     const siteBackups = await siteBackupService.listFor(user, instance.id);
     const ready = instance.status === 'ready';
     const failed = instance.status === 'failed';
+    const canRetry =
+      failed && latestJob?.type === 'provision' && latestJob.status === 'failed';
     const canDelete = ready || failed;
     const pageQuery = request.query as { error?: string };
     const errorBox = pageQuery.error
@@ -300,6 +302,17 @@ export function registerWebRoutes(
         </form>
         <p class="muted">Changing this label does not rename your ERPNext site or change its URL.</p>
       </div>
+      ${
+        canRetry
+          ? `<div class="card warning">
+        <h3>Provisioning needs attention</h3>
+        <p>The last provisioning attempt failed. Retry to queue a fresh attempt; your site URL and workspace data will be preserved.</p>
+        <form method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/retry">
+          <button class="action" type="submit">Retry provisioning</button>
+        </form>
+      </div>`
+          : ''
+      }
       <div class="card">
         <div class="page-heading"><div><h3>Full-site backups</h3><p class="muted">Includes the MariaDB database and public/private files. Completed backups are stored on the persistent backup volume.</p></div>
           <form method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/backups">
@@ -361,6 +374,18 @@ export function registerWebRoutes(
       await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}`, 303);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Could not start site backup';
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}?error=${encodeURIComponent(message)}`, 303);
+    }
+  });
+
+  app.post('/dashboard/instances/:id/retry', { preHandler: requireAuth }, async (request, reply) => {
+    const { user } = getAuth(request);
+    const { id } = request.params as { id: string };
+    try {
+      await instanceService.retry(user, id);
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}`, 303);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not retry provisioning';
       await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}?error=${encodeURIComponent(message)}`, 303);
     }
   });

@@ -133,6 +133,63 @@ describe('POST /api/instances', () => {
     expect(updated.json().instance.hostname).toBe(instance.hostname);
   });
 
+  it('lets the owner retry a failed provisioning job', async () => {
+    ctx = await makeTestApp();
+    const { cookie } = await loginAs(ctx, { sub: 'u1', email: 'u1@example.test' });
+    const created = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/instances',
+      headers: { cookie },
+      payload: { name: 'Acme Manufacturing' },
+    });
+    const instance = created.json().instance;
+    const job = await ctx.store.findLatestJobForInstance(instance.id);
+    await ctx.store.failJob(job!.id, 'provisioning failed');
+    await ctx.store.updateInstance(instance.id, {
+      status: 'failed',
+      errorMessage: 'provisioning failed',
+    });
+
+    const retry = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/instances/${instance.id}/retry`,
+      headers: { cookie },
+    });
+
+    expect(retry.statusCode).toBe(202);
+    expect(retry.json().instance.status).toBe('queued');
+    expect(retry.json().instance.errorMessage).toBeNull();
+    const retriedJob = await ctx.store.findLatestJobForInstance(instance.id);
+    expect(retriedJob?.type).toBe('provision');
+    expect(retriedJob?.status).toBe('queued');
+    expect(retriedJob?.attempts).toBe(0);
+  });
+
+  it('does not let an unrelated owner retry another tenant instance', async () => {
+    ctx = await makeTestApp();
+    const owner = await loginAs(ctx, { sub: 'owner', email: 'owner@example.test' });
+    const other = await loginAs(ctx, { sub: 'other', email: 'other@example.test' });
+    const created = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/instances',
+      headers: { cookie: owner.cookie },
+      payload: { name: 'Acme Manufacturing' },
+    });
+    const id = created.json().instance.id;
+    const job = await ctx.store.findLatestJobForInstance(id);
+    await ctx.store.failJob(job!.id, 'provisioning failed');
+    await ctx.store.updateInstance(id, { status: 'failed', errorMessage: 'provisioning failed' });
+
+    const retry = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/instances/${id}/retry`,
+      headers: { cookie: other.cookie },
+    });
+
+    expect(retry.statusCode).toBe(404);
+    expect((await ctx.store.findInstanceById(id))?.status).toBe('failed');
+  });
+
   it('requires the exact hostname before queuing destructive deletion', async () => {
     ctx = await makeTestApp();
     const { cookie } = await loginAs(ctx, { sub: 'u1', email: 'u1@example.test' });

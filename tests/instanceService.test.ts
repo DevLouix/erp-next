@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { MemoryStore } from '../src/domain/memoryStore.js';
 import { InstanceService } from '../src/instances/instanceService.js';
 import { testConfig } from '../src/config.js';
-import { ForbiddenError, NotFoundError, ValidationError } from '../src/domain/errors.js';
+import { NotFoundError, ValidationError } from '../src/domain/errors.js';
 import type { User } from '../src/domain/types.js';
 
 const config = testConfig();
@@ -74,14 +74,27 @@ describe('InstanceService ownership', () => {
 });
 
 describe('InstanceService.retry', () => {
-  it('is admin-only', async () => {
+  it('allows an owner to retry their failed provisioning job', async () => {
     const instance = await service.create(owner, { companyName: 'Acme Corp', idempotencyKey: null });
+    const job = await store.findLatestJobForInstance(instance.id);
+    await store.failJob(job!.id, 'bench failed');
     await store.updateInstance(instance.id, { status: 'failed' });
-    await expect(service.retry(owner, instance.id)).rejects.toThrow(ForbiddenError);
+    const retried = await service.retry(owner, instance.id);
+    expect(retried.status).toBe('queued');
+  });
+
+  it('does not allow another owner to retry the instance', async () => {
+    const instance = await service.create(owner, { companyName: 'Acme Corp', idempotencyKey: null });
+    const job = await store.findLatestJobForInstance(instance.id);
+    await store.failJob(job!.id, 'bench failed');
+    await store.updateInstance(instance.id, { status: 'failed' });
+    await expect(service.retry(other, instance.id)).rejects.toThrow(NotFoundError);
   });
 
   it('re-queues a failed instance', async () => {
     const instance = await service.create(owner, { companyName: 'Acme Corp', idempotencyKey: null });
+    const initialJob = await store.findLatestJobForInstance(instance.id);
+    await store.failJob(initialJob!.id, 'bench failed');
     await store.updateInstance(instance.id, { status: 'failed', errorMessage: 'boom' });
     const retried = await service.retry(admin, instance.id);
     expect(retried.status).toBe('queued');

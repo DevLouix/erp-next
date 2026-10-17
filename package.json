@@ -19,6 +19,7 @@
     "prisma:deploy": "prisma migrate deploy",
     "db:up": "docker compose up -d platform-postgres platform-postgres-test",
     "db:down": "docker compose down",
+    "deploy": "bash deploy.sh",
     "stack:up": "docker compose up -d --build",
     "stack:down": "docker compose down",
     "stack:logs": "docker compose logs -f platform-api platform-worker",

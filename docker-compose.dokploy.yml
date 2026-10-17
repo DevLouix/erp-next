@@ -1,0 +1,51 @@
+# Dokploy overlay — drop host ports and route through Dokploy's Traefik.
+#
+# Use with the base file, e.g.:
+#   docker compose -f docker-compose.yml -f docker-compose.dokploy.yml up -d
+#
+# In Dokploy, set the app's environment variable
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.dokploy.yml
+# (Docker Compose honors it) or point the Compose Path at the combined command
+# your version supports. Requires Docker Compose v2.24+ for the `!reset` tag.
+#
+# Provides two Traefik routers:
+#   - erpnext-api    -> platform-api:3000   on  Host(${PUBLIC_HOST})
+#   - erpnext-sites  -> frappe-frontend:8080 on  Host(*.${PROVISIONING_BASE_DOMAIN})
+# The sites router requests a WILDCARD cert, so the resolver below MUST use the
+# DNS-01 challenge. Adjust the resolver names/network to match your Dokploy.
+
+services:
+  platform-api:
+    # Dokploy routes via Traefik; don't bind host ports.
+    ports: !reset []
+    networks: [erpnext, dokploy-network]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${DOKPLOY_NETWORK:-dokploy-network}"
+      - "traefik.http.routers.erpnext-api.rule=Host(`${PUBLIC_HOST}`)"
+      - "traefik.http.routers.erpnext-api.entrypoints=websecure"
+      - "traefik.http.routers.erpnext-api.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
+      - "traefik.http.services.erpnext-api.loadbalancer.server.port=3000"
+
+  frappe-frontend:
+    ports: !reset []
+    networks: [erpnext, dokploy-network]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${DOKPLOY_NETWORK:-dokploy-network}"
+      - "traefik.http.routers.erpnext-sites.rule=Host(`*.${PROVISIONING_BASE_DOMAIN}`)"
+      - "traefik.http.routers.erpnext-sites.entrypoints=websecure"
+      - "traefik.http.routers.erpnext-sites.tls.certresolver=${TRAEFIK_WILDCARD_CERTRESOLVER:-letsencrypt-dns}"
+      # These two lines make Traefik request one wildcard certificate.
+      - "traefik.http.routers.erpnext-sites.tls.domains[0].main=${PROVISIONING_BASE_DOMAIN}"
+      - "traefik.http.routers.erpnext-sites.tls.domains[0].sans=*.${PROVISIONING_BASE_DOMAIN}"
+      - "traefik.http.services.erpnext-sites.loadbalancer.server.port=8080"
+
+  # The platform database is internal to the stack; no host port needed.
+  platform-postgres:
+    ports: !reset []
+
+networks:
+  dokploy-network:
+    external: true
+    name: ${DOKPLOY_NETWORK:-dokploy-network}

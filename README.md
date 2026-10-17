@@ -120,6 +120,29 @@ Generated secrets are written to `.env` (chmod `600`, gitignored). For a
 confidential Truemoi client set `TRUEMOI_CLIENT_SECRET`; for a public client it can
 stay empty.
 
+### Deploying on Dokploy
+
+Dokploy runs a Compose project and routes traffic with its own Traefik (which owns
+80/443). Use the account's **Docker Compose** type, not Docker Stack.
+
+1. Set every value from `.env.example` in Dokploy's **Environment** tab — Dokploy
+   does not have your `.env` file.
+2. Apply the overlay so host ports are dropped and the services join Traefik:
+   set `COMPOSE_FILE=docker-compose.yml:docker-compose.dokploy.yml`.
+3. Set `PUBLIC_HOST` (bare host, e.g. `erp.example.com`), `DOKPLOY_NETWORK`
+   (default `dokploy-network`) and the resolver names
+   (`TRAEFIK_CERTRESOLVER`, `TRAEFIK_WILDCARD_CERTRESOLVER`).
+4. DNS: point `*.${PROVISIONING_BASE_DOMAIN}` and `PUBLIC_HOST` at the Dokploy
+   server.
+5. Configure a **DNS-01** certificate resolver in Traefik (Cloudflare, Route53,
+   …). The wildcard router requests one certificate for
+   `*.${PROVISIONING_BASE_DOMAIN}`; HTTP-01 cannot issue wildcards.
+
+The overlay exposes two routers: `Host(PUBLIC_HOST)` → `platform-api:3000`, and
+`Host(*.PROVISIONING_BASE_DOMAIN)` → `frappe-frontend:8080` (with a wildcard TLS
+cert). Add domains via these labels **or** Dokploy's Domains tab — not both.
+`platform-postgres-test` stays off via its `test` profile.
+
 ## Quick start (run the platform directly)
 
 ```bash

@@ -6,12 +6,18 @@ import { silentLogger } from '../src/lib/logger.js';
 import { testConfig } from '../src/config.js';
 import type { Instance, User } from '../src/domain/types.js';
 import { FakeBench, FakeHealth } from './helpers/fakes.js';
+import { encryptCredential } from '../src/admin/credentialEncryption.js';
 
 const config = testConfig();
 
 let store: MemoryStore;
 let service: InstanceService;
 let owner: User;
+
+const encryptedS3Credentials = {
+  accessKeyCiphertext: encryptCredential('test-access-key', config.BACKUP_CREDENTIALS_ENCRYPTION_KEY),
+  secretKeyCiphertext: encryptCredential('test-secret-key', config.BACKUP_CREDENTIALS_ENCRYPTION_KEY),
+};
 
 beforeEach(async () => {
   store = new MemoryStore();
@@ -230,6 +236,7 @@ describe('ProvisioningWorker site deletion', () => {
         s3Region: 'us-east-1',
       },
       new Date(),
+      encryptedS3Credentials,
     );
     await service.deleteFor(owner, instance.id, instance.hostname);
     const bench = new FakeBench();
@@ -275,6 +282,7 @@ describe('ProvisioningWorker site backups', () => {
         s3Region: 'us-east-1',
       },
       now,
+      encryptedS3Credentials,
     );
     expect(
       await store.queueScheduledSiteBackups(new Date(now.getTime() + 24 * 60 * 60 * 1000 + 1), 3),
@@ -302,6 +310,7 @@ describe('ProvisioningWorker site backups', () => {
         s3Region: 'us-east-1',
       },
       now,
+      encryptedS3Credentials,
     );
     const backup = await store.queueSiteBackup(instance, owner.id, 3);
     const bench = new FakeBench();

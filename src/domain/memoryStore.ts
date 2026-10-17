@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type {
   AuditLogEntry,
+  EncryptedSiteBackupCredentials,
   BackupSnapshot,
   BackupSnapshotMeta,
   CreateInstanceInput,
@@ -50,8 +51,10 @@ export class MemoryStore implements Store {
     s3Endpoint: null,
     s3Bucket: null,
     s3Region: null,
+    s3CredentialsConfigured: false,
     updatedAt: new Date(0),
   };
+  private siteBackupCredentials: EncryptedSiteBackupCredentials | null = null;
   private sessions = new Map<string, Session>();
   private oauthTransactions = new Map<string, OAuthTransaction>();
   private audits: AuditLogEntry[] = [];
@@ -307,7 +310,10 @@ export class MemoryStore implements Store {
   }
 
   async getSiteBackupSettings(): Promise<SiteBackupSettings> {
-    return this.siteBackupSettings;
+    return {
+      ...this.siteBackupSettings,
+      s3CredentialsConfigured: this.siteBackupCredentials !== null,
+    };
   }
 
   async updateSiteBackupSettings(
@@ -316,15 +322,22 @@ export class MemoryStore implements Store {
       'automaticEnabled' | 'intervalHours' | 's3Endpoint' | 's3Bucket' | 's3Region'
     >,
     now: Date,
+    credentials?: EncryptedSiteBackupCredentials | null,
   ): Promise<SiteBackupSettings> {
+    if (credentials !== undefined) this.siteBackupCredentials = credentials;
     this.siteBackupSettings = {
       ...settings,
+      s3CredentialsConfigured: this.siteBackupCredentials !== null,
       nextRunAt: settings.automaticEnabled
         ? new Date(now.getTime() + settings.intervalHours * 60 * 60 * 1000)
         : null,
       updatedAt: now,
     };
     return this.siteBackupSettings;
+  }
+
+  async getSiteBackupCredentials(): Promise<EncryptedSiteBackupCredentials | null> {
+    return this.siteBackupCredentials ? { ...this.siteBackupCredentials } : null;
   }
 
   async queueScheduledSiteBackups(now: Date, maxAttempts: number): Promise<number> {

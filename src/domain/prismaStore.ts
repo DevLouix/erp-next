@@ -4,6 +4,7 @@ import type { Store } from './store.js';
 import { DuplicateError } from './errors.js';
 import type {
   AuditLogEntry,
+  EncryptedSiteBackupCredentials,
   BackupSnapshot,
   BackupSnapshotMeta,
   CreateInstanceInput,
@@ -104,9 +105,19 @@ function toSiteBackupSettings(row: {
   s3Endpoint: string | null;
   s3Bucket: string | null;
   s3Region: string | null;
+  s3AccessKeyCiphertext?: string | null;
+  s3SecretKeyCiphertext?: string | null;
   updatedAt: Date;
 }): SiteBackupSettings {
-  return row;
+  const {
+    s3AccessKeyCiphertext,
+    s3SecretKeyCiphertext,
+    ...settings
+  } = row;
+  return {
+    ...settings,
+    s3CredentialsConfigured: Boolean(s3AccessKeyCiphertext && s3SecretKeyCiphertext),
+  };
 }
 
 function toSession(row: {
@@ -405,13 +416,14 @@ export class PrismaStore implements Store {
 
   async getSiteBackupSettings(): Promise<SiteBackupSettings> {
     const settings = await this.prisma.siteBackupSettings.findUnique({ where: { id: 1 } });
-    return settings ?? {
+    return settings ? toSiteBackupSettings(settings) : {
       automaticEnabled: false,
       intervalHours: 24,
       nextRunAt: null,
       s3Endpoint: null,
       s3Bucket: null,
       s3Region: null,
+      s3CredentialsConfigured: false,
       updatedAt: new Date(0),
     };
   }
@@ -422,16 +434,50 @@ export class PrismaStore implements Store {
       'automaticEnabled' | 'intervalHours' | 's3Endpoint' | 's3Bucket' | 's3Region'
     >,
     now: Date,
+    credentials?: EncryptedSiteBackupCredentials | null,
   ): Promise<SiteBackupSettings> {
     const nextRunAt = settings.automaticEnabled
       ? new Date(now.getTime() + settings.intervalHours * 60 * 60 * 1000)
       : null;
     const result = await this.prisma.siteBackupSettings.upsert({
       where: { id: 1 },
-      create: { id: 1, ...settings, nextRunAt },
-      update: { ...settings, nextRunAt },
+      create: {
+        id: 1,
+        ...settings,
+        nextRunAt,
+        ...(credentials
+          ? {
+              s3AccessKeyCiphertext: credentials.accessKeyCiphertext,
+              s3SecretKeyCiphertext: credentials.secretKeyCiphertext,
+            }
+          : {}),
+      },
+      update: {
+        ...settings,
+        nextRunAt,
+        ...(credentials === null
+          ? { s3AccessKeyCiphertext: null, s3SecretKeyCiphertext: null }
+          : credentials
+            ? {
+                s3AccessKeyCiphertext: credentials.accessKeyCiphertext,
+                s3SecretKeyCiphertext: credentials.secretKeyCiphertext,
+              }
+            : {}),
+      },
     });
     return toSiteBackupSettings(result);
+  }
+
+  async getSiteBackupCredentials(): Promise<EncryptedSiteBackupCredentials | null> {
+    const row = await this.prisma.siteBackupSettings.findUnique({
+      where: { id: 1 },
+      select: { s3AccessKeyCiphertext: true, s3SecretKeyCiphertext: true },
+    });
+    if (!row?.s3AccessKeyCiphertext || !row.s3SecretKeyCiphertext) return null;
+    return {
+      accessKeyCiphertext: row.s3AccessKeyCiphertext,
+      secretKeyCiphertext: row.s3SecretKeyCiphertext,
+    };
   }
 
   async queueScheduledSiteBackups(now: Date, maxAttempts: number): Promise<number> {

@@ -112,12 +112,67 @@ describe('backup export', () => {
         s3Endpoint: 'https://objects.example.test',
         s3Bucket: 'erpnext-backups',
         s3Region: 'us-east-1',
+        s3AccessKeyId: 'test-access-key',
+        s3SecretAccessKey: 'test-secret-key',
       },
     });
     expect(updated.statusCode).toBe(200);
     expect(updated.json().settings.automaticEnabled).toBe(true);
     expect(updated.json().settings.s3Endpoint).toBe('https://objects.example.test');
+    expect(updated.json().settings.s3CredentialsConfigured).toBe(true);
+    expect(JSON.stringify(updated.json())).not.toContain('test-access-key');
+    expect(JSON.stringify(updated.json())).not.toContain('test-secret-key');
     expect(updated.json().settings.nextRunAt).toBeTruthy();
+    const encrypted = await ctx.store.getSiteBackupCredentials();
+    expect(encrypted?.accessKeyCiphertext).not.toContain('test-access-key');
+    expect(encrypted?.secretKeyCiphertext).not.toContain('test-secret-key');
+
+    const read = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/admin/site-backup-settings',
+      headers: { cookie: admin.cookie },
+    });
+    expect(read.json().settings.s3CredentialsConfigured).toBe(true);
+    expect(JSON.stringify(read.json())).not.toContain('test-secret-key');
+  });
+
+  it('preserves saved credentials when settings are edited and supports clearing them', async () => {
+    const ctx = await app();
+    const admin = await loginAs(ctx, {
+      sub: 'root',
+      email: 'root@example.test',
+      role: 'platform-admin',
+    });
+    const base = {
+      automaticEnabled: false,
+      intervalHours: 24,
+      s3Endpoint: null,
+      s3Bucket: null,
+      s3Region: null,
+    };
+    await ctx.app.inject({
+      method: 'PUT',
+      url: '/api/admin/site-backup-settings',
+      headers: { cookie: admin.cookie },
+      payload: { ...base, s3AccessKeyId: 'keep-me', s3SecretAccessKey: 'also-keep-me' },
+    });
+    await ctx.app.inject({
+      method: 'PUT',
+      url: '/api/admin/site-backup-settings',
+      headers: { cookie: admin.cookie },
+      payload: { ...base, intervalHours: 168 },
+    });
+    expect((await ctx.store.getSiteBackupSettings()).s3CredentialsConfigured).toBe(true);
+
+    const cleared = await ctx.app.inject({
+      method: 'PUT',
+      url: '/api/admin/site-backup-settings',
+      headers: { cookie: admin.cookie },
+      payload: { ...base, intervalHours: 168, clearS3Credentials: true },
+    });
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json().settings.s3CredentialsConfigured).toBe(false);
+    expect(await ctx.store.getSiteBackupCredentials()).toBeNull();
   });
 
   it('does not allow regular users to configure backup policy', async () => {

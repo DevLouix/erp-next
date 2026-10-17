@@ -20,6 +20,9 @@ const siteBackupSettingsForm = z.object({
   s3Endpoint: z.string().optional(),
   s3Bucket: z.string().optional(),
   s3Region: z.string().optional(),
+  s3AccessKeyId: z.string().optional(),
+  s3SecretAccessKey: z.string().optional(),
+  clearS3Credentials: z.enum(['on']).optional(),
 });
 const roleFormBody = z.object({ role: z.enum(['admin', 'user']) });
 const disabledFormBody = z.object({ disabled: z.enum(['true', 'false']) });
@@ -68,7 +71,7 @@ function layout(title: string, body: string, user?: User | null): string {
   .card h2, .card h3 { margin-top: 0; letter-spacing: -.02em; }
   form.row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: end; }
   label { display: block; font-size: .82rem; color: var(--muted); margin-bottom: .35rem; }
-  input[type=text], input[type=file] { padding: .68rem .8rem; border-radius: 8px; border: 1px solid #40516a; background: var(--bg); color: inherit; min-width: min(260px, 100%); font: inherit; }
+  input[type=text], input[type=password], input[type=file] { padding: .68rem .8rem; border-radius: 8px; border: 1px solid #40516a; background: var(--bg); color: inherit; min-width: min(260px, 100%); font: inherit; }
   button[type=submit], button.action { background: #2563eb; color: white; border: 1px solid #3b82f6; border-radius: 8px; padding: .65rem 1rem; cursor: pointer; font: inherit; font-weight: 600; }
   button.danger { background: #991b1b; border-color: #dc2626; }
   button.secondary { background: var(--surface-raised); border-color: #40516a; }
@@ -92,7 +95,7 @@ function layout(title: string, body: string, user?: User | null): string {
     @media (prefers-color-scheme: light) {
       :root { --bg: #f2f6fb; --surface: #fff; --surface-raised: #eef3f9; --line: #dce4ef; --text: #172438; --muted: #5d6d82; --accent: #1d4ed8; }
       .warning { background: #fffbeb; color: #78350f; }
-      input[type=text], input[type=file] { border-color: #cbd5e1; }
+      input[type=text], input[type=password], input[type=file] { border-color: #cbd5e1; }
       .secondary { color: #172438 !important; }
     }
     @media (max-width: 640px) { header { align-items: flex-start; flex-wrap: wrap; } nav { margin-left: 0; width: 100%; flex-wrap: wrap; } .page-heading { align-items: flex-start; flex-direction: column; } main { padding: 1rem; } }
@@ -509,9 +512,16 @@ export function registerWebRoutes(
           <div><label for="s3Endpoint">S3-compatible endpoint (optional)</label><input id="s3Endpoint" type="text" name="s3Endpoint" value="${escapeHtml(siteBackupSettings.s3Endpoint ?? '')}" placeholder="https://s3.example.com"></div>
           <div><label for="s3Bucket">Bucket</label><input id="s3Bucket" type="text" name="s3Bucket" value="${escapeHtml(siteBackupSettings.s3Bucket ?? '')}" placeholder="erpnext-backups"></div>
           <div><label for="s3Region">Region</label><input id="s3Region" type="text" name="s3Region" value="${escapeHtml(siteBackupSettings.s3Region ?? '')}" placeholder="us-east-1"></div>
+          <div><label for="s3AccessKeyId">S3 access key ID</label><input id="s3AccessKeyId" type="password" name="s3AccessKeyId" autocomplete="new-password" placeholder="${siteBackupSettings.s3CredentialsConfigured ? 'Saved; leave blank to keep' : 'Enter access key ID'}"></div>
+          <div><label for="s3SecretAccessKey">S3 secret access key</label><input id="s3SecretAccessKey" type="password" name="s3SecretAccessKey" autocomplete="new-password" placeholder="${siteBackupSettings.s3CredentialsConfigured ? 'Saved; leave blank to keep' : 'Enter secret access key'}"></div>
+          ${
+            siteBackupSettings.s3CredentialsConfigured
+              ? '<label><input type="checkbox" name="clearS3Credentials" value="on"> Clear saved S3 credentials</label>'
+              : ''
+          }
           <button class="action" type="submit">Save backup policy</button>
         </form>
-        <p class="muted">S3 credentials are never stored in the platform database. Configure AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in the worker's deployment secrets. Local full backups remain available if remote upload fails. Next run: ${siteBackupSettings.nextRunAt?.toISOString() ?? 'not scheduled'}.</p>
+        <p class="muted">S3 credentials are encrypted before they are stored in the platform database and are never returned by the settings API. Configure BACKUP_CREDENTIALS_ENCRYPTION_KEY as the same persistent secret in the API and worker deployments. Local full backups remain available if remote upload fails. Next run: ${siteBackupSettings.nextRunAt?.toISOString() ?? 'not scheduled'}.</p>
       </div>
       <div class="card">
         <h2>Backup &amp; restore</h2>
@@ -643,6 +653,9 @@ export function registerWebRoutes(
         s3Endpoint: body.s3Endpoint?.trim() || null,
         s3Bucket: body.s3Bucket?.trim() || null,
         s3Region: body.s3Region?.trim() || null,
+        s3AccessKeyId: body.s3AccessKeyId,
+        s3SecretAccessKey: body.s3SecretAccessKey,
+        clearS3Credentials: body.clearS3Credentials === 'on',
       });
       await reply.redirect('/admin', 303);
     } catch (err) {

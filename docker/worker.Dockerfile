@@ -15,7 +15,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY prisma ./prisma
-RUN pnpm install --frozen-lockfile && pnpm prisma generate
+RUN pnpm install --frozen-lockfile --prod=false && pnpm prisma generate
 
 COPY tsconfig.json ./
 COPY src ./src
@@ -23,4 +23,4 @@ COPY src ./src
 ENV NODE_ENV=production
 # Drop back to the unprivileged Frappe user, which owns the sites volume.
 USER frappe
-CMD ["pnpm", "worker"]
+CMD ["./node_modules/.bin/tsx", "src/worker-entry.ts"]

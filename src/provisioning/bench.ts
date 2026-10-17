@@ -109,12 +109,10 @@ export class BenchClient {
     this.assertOk(result, `Configuring hostname for ${siteName}`);
   }
 
-  /** Regenerate and reload the nginx vhosts so the new hostname is routed. */
+  /** Regenerate nginx configuration; the deployment's ingress owns reloads. */
   async configureRouting(): Promise<void> {
     const setup = await this.bench(['setup', 'nginx']);
     this.assertOk(setup, 'Regenerating nginx configuration');
-    const reload = await this.bench(['reload-nginx']);
-    this.assertOk(reload, 'Reloading nginx');
   }
 
   /** Best-effort teardown of a partially provisioned site. */
@@ -222,6 +220,7 @@ export class BenchClient {
     backupId: string,
     parts: SiteBackupPart[],
     target: Pick<SiteBackupSettings, 's3Endpoint' | 's3Bucket' | 's3Region'>,
+    credentials: { accessKeyId: string; secretAccessKey: string },
   ): Promise<SiteBackupPart[]> {
     const endpoint = target.s3Endpoint;
     const bucket = target.s3Bucket;
@@ -234,6 +233,7 @@ export class BenchClient {
       endpoint,
       region,
       forcePathStyle: true,
+      credentials,
     });
     try {
       return await Promise.all(

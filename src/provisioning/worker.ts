@@ -4,6 +4,7 @@ import type { Instance, ProvisioningJob, SiteBackupPart } from '../domain/types.
 import type { Logger } from '../lib/logger.js';
 import { consoleLogger } from '../lib/logger.js';
 import { redact } from './commands.js';
+import { decryptCredential } from '../admin/credentialEncryption.js';
 
 /** The Bench operations the worker needs. `BenchClient` implements this. */
 export interface ProvisioningBench {
@@ -18,6 +19,7 @@ export interface ProvisioningBench {
     backupId: string,
     parts: SiteBackupPart[],
     target: Pick<import('../domain/types.js').SiteBackupSettings, 's3Endpoint' | 's3Bucket' | 's3Region'>,
+    credentials: { accessKeyId: string; secretAccessKey: string },
   ): Promise<SiteBackupPart[]>;
 }
 
@@ -336,8 +338,22 @@ export class ProvisioningWorker {
     const settings = await this.deps.store.getSiteBackupSettings();
     if (!settings.s3Endpoint && !settings.s3Bucket) return { parts, s3Error: null };
     try {
+      const encryptedCredentials = await this.deps.store.getSiteBackupCredentials();
+      if (!encryptedCredentials) {
+        throw new Error('S3 backup target is configured without saved credentials');
+      }
+      const credentials = {
+        accessKeyId: decryptCredential(
+          encryptedCredentials.accessKeyCiphertext,
+          this.deps.config.BACKUP_CREDENTIALS_ENCRYPTION_KEY,
+        ),
+        secretAccessKey: decryptCredential(
+          encryptedCredentials.secretKeyCiphertext,
+          this.deps.config.BACKUP_CREDENTIALS_ENCRYPTION_KEY,
+        ),
+      };
       return {
-        parts: await this.deps.bench.uploadBackup(siteName, backupId, parts, settings),
+        parts: await this.deps.bench.uploadBackup(siteName, backupId, parts, settings, credentials),
         s3Error: null,
       };
     } catch (err) {

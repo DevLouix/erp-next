@@ -111,7 +111,7 @@ services:
     restart: "no"
     entrypoint: [bash, -c]
     command:
-      - mkdir -p /backup && chown -R frappe:frappe /backup
+      - mkdir -p /backup && chown -R 1000:0 /backup && chmod 2770 /backup
     volumes:
       - frappe-backups:/backup
 

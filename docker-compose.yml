@@ -248,8 +248,10 @@ services:
       - frappe-redis-queue-data:/data
 
   # Test-only PostgreSQL for the opt-in integration test (host port 5433).
+  # Opt-in via profile so production deploys never start it.
   platform-postgres-test:
     image: postgres:16-alpine
+    profiles: [test]
     restart: unless-stopped
     networks: [erpnext]
     environment:

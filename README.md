@@ -64,8 +64,6 @@ in-container ports stay fixed, so service-to-service networking is unaffected;
 remember to keep `PUBLIC_BASE_URL` (and `TEST_DATABASE_URL`) in sync with any
 ports you change.
 
-Services:
-
 Services are namespaced: `platform-*` for the hosting platform, `frappe-*` for the
 Bench. Under the pinned Compose project name (`COMPOSE_PROJECT_NAME`, default
 `erpnext`) containers appear as `erpnext-platform-api-1`, `erpnext-frappe-db-1`, etc.
@@ -88,6 +86,39 @@ The Frappe services follow the upstream
 nginx vhosts best-effort (`PROVISION_ROUTING_MODE=best-effort`) because nginx runs
 as the separate `frappe-frontend` service and the **HTTP health check is the real
 gate**.
+
+### Deploying with `deploy.sh`
+
+`deploy.sh` wraps the stack up with production guardrails. It checks Docker, then
+checks that `.env` is production-ready (HTTPS `PUBLIC_BASE_URL`, a strong
+`SESSION_COOKIE_SECRET`, non-placeholder DB/admin passwords, Truemoi settings and
+a real `PROVISIONING_BASE_DOMAIN`). If values are missing it offers to
+**auto-generate the secrets** and prompts you for the rest, then forces
+`NODE_ENV=production` and `COOKIE_SECURE=true` before starting the services.
+
+```bash
+./deploy.sh                # interactive: fix missing values, confirm, deploy
+./deploy.sh --auto         # auto-generate secrets, prompt only for the rest
+./deploy.sh --auto -y      # non-interactive (fails if non-secret values are missing)
+./deploy.sh --dry-run      # validate + print the plan; writes/starts nothing
+./deploy.sh --force        # rotate all secrets
+./deploy.sh --down         # stop the stack
+```
+
+| Flag | Effect |
+| --- | --- |
+| `-a`, `--auto` | Auto-generate secrets; prompt only for non-secret values. |
+| `-y`, `--yes` | Skip the final confirmation. |
+| `--force` | Regenerate all secrets (rotates credentials). |
+| `--dry-run`, `--check` | Validate and print the plan; write/start nothing. |
+| `--no-build` | Skip rebuilding images. |
+| `--allow-insecure` | Permit an `http://` `PUBLIC_BASE_URL` (trusted staging only). |
+| `--logs` | Follow `platform-api`/`platform-worker` logs after deploying. |
+| `--down` | Stop the stack and exit. |
+
+Generated secrets are written to `.env` (chmod `600`, gitignored). For a
+confidential Truemoi client set `TRUEMOI_CLIENT_SECRET`; for a public client it can
+stay empty.
 
 ## Quick start (run the platform directly)
 

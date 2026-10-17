@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { AppConfig } from '../../config.js';
 import type { AdminService } from '../../admin/adminService.js';
 import type { BackupService } from '../../admin/backupService.js';
+import type { SiteBackupService } from '../../admin/siteBackupService.js';
 import { getAuth, requireAdmin, requireAuth } from '../../auth/middleware.js';
 import { serializeInstance, serializeUser } from '../serialize.js';
 
@@ -10,6 +11,13 @@ const roleBody = z.object({ role: z.enum(['user', 'admin']) });
 const disabledBody = z.object({ disabled: z.boolean() });
 const auditQuery = z.object({ limit: z.coerce.number().int().min(1).max(500).optional() });
 const createBackupBody = z.object({ label: z.string().max(200).optional() });
+const siteBackupSettingsBody = z.object({
+  automaticEnabled: z.boolean(),
+  intervalHours: z.union([z.literal(24), z.literal(168)]),
+  s3Endpoint: z.string().trim().nullable().optional().transform((value) => value || null),
+  s3Bucket: z.string().trim().nullable().optional().transform((value) => value || null),
+  s3Region: z.string().trim().nullable().optional().transform((value) => value || null),
+});
 const importBody = z.object({
   snapshot: z.unknown().optional(),
   dryRun: z.boolean().optional(),
@@ -20,6 +28,7 @@ export function registerAdminRoutes(
   app: FastifyInstance,
   adminService: AdminService,
   backupService: BackupService,
+  siteBackupService: SiteBackupService,
   config: AppConfig,
 ): void {
   app.get(
@@ -39,6 +48,48 @@ export function registerAdminRoutes(
       const { user } = getAuth(request);
       const instances = await adminService.listInstances(user);
       reply.send({ instances: instances.map((i) => serializeInstance(i, config)) });
+    },
+  );
+
+  app.get(
+    '/api/admin/site-backups',
+    { preHandler: [requireAuth, requireAdmin] },
+    async (request, reply) => {
+      const { user } = getAuth(request);
+      const backups = await siteBackupService.listAllForAdmin(user);
+      reply.send({
+        backups: backups.map((backup) => ({
+          ...backup,
+          parts: backup.parts.map((part) => ({
+            kind: part.kind,
+            sizeBytes: part.sizeBytes,
+            downloadUrl: `/api/site-backups/${encodeURIComponent(backup.id)}/files/${part.kind}`,
+          })),
+          createdAt: backup.createdAt.toISOString(),
+          completedAt: backup.completedAt?.toISOString() ?? null,
+        })),
+      });
+    },
+  );
+
+  app.get(
+    '/api/admin/site-backup-settings',
+    { preHandler: [requireAuth, requireAdmin] },
+    async (request, reply) => {
+      const { user } = getAuth(request);
+      const settings = await siteBackupService.getSettings(user);
+      reply.send({ settings: { ...settings, nextRunAt: settings.nextRunAt?.toISOString() ?? null, updatedAt: settings.updatedAt.toISOString() } });
+    },
+  );
+
+  app.put(
+    '/api/admin/site-backup-settings',
+    { preHandler: [requireAuth, requireAdmin] },
+    async (request, reply) => {
+      const { user } = getAuth(request);
+      const body = siteBackupSettingsBody.parse(request.body ?? {});
+      const settings = await siteBackupService.updateSettings(user, body);
+      reply.send({ settings: { ...settings, nextRunAt: settings.nextRunAt?.toISOString() ?? null, updatedAt: settings.updatedAt.toISOString() } });
     },
   );
 

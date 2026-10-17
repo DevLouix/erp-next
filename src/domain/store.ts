@@ -10,6 +10,9 @@ import type {
   OAuthTransaction,
   PlatformSnapshot,
   ProvisioningJob,
+  SiteBackup,
+  SiteBackupPart,
+  SiteBackupSettings,
   Session,
   User,
   UserRole,
@@ -54,8 +57,38 @@ export interface Store {
   listAllInstances(): Promise<Instance[]>;
   updateInstance(
     id: string,
-    patch: Partial<{ status: InstanceStatus; errorMessage: string | null }>,
+    patch: Partial<{ companyName: string; status: InstanceStatus; errorMessage: string | null }>,
   ): Promise<Instance>;
+  queueInstanceDeletion(instanceId: string, maxAttempts: number): Promise<ProvisioningJob>;
+  deleteInstance(id: string): Promise<void>;
+  queueSiteBackup(instance: Instance, actorUserId: string, maxAttempts: number): Promise<SiteBackup>;
+  createSiteBackupRecord(
+    siteName: string,
+    hostname: string,
+    actorUserId: string | null,
+  ): Promise<SiteBackup>;
+  updateSiteBackup(
+    id: string,
+    patch: Partial<{
+      status: SiteBackup['status'];
+      parts: SiteBackupPart[];
+      errorMessage: string | null;
+      completedAt: Date | null;
+    }>,
+  ): Promise<SiteBackup>;
+  findSiteBackup(id: string): Promise<SiteBackup | null>;
+  listSiteBackups(siteName: string): Promise<SiteBackup[]>;
+  listSiteBackupsByOwner(ownerUserId: string): Promise<SiteBackup[]>;
+  listAllSiteBackups(): Promise<SiteBackup[]>;
+  getSiteBackupSettings(): Promise<SiteBackupSettings>;
+  updateSiteBackupSettings(
+    settings: Pick<
+      SiteBackupSettings,
+      'automaticEnabled' | 'intervalHours' | 's3Endpoint' | 's3Bucket' | 's3Region'
+    >,
+    now: Date,
+  ): Promise<SiteBackupSettings>;
+  queueScheduledSiteBackups(now: Date, maxAttempts: number): Promise<number>;
   /** Create or update an instance by its (unique) site name — used by restore. */
   importInstance(input: ImportInstanceInput): Promise<Instance>;
 

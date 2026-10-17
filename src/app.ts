@@ -9,6 +9,7 @@ import { registerAuthDecorators, registerAuthHook, registerOriginCheck } from '.
 import { InstanceService } from './instances/instanceService.js';
 import { AdminService } from './admin/adminService.js';
 import { BackupService } from './admin/backupService.js';
+import { SiteBackupService } from './admin/siteBackupService.js';
 import { registerErrorHandler } from './http/errors.js';
 import { registerAuthRoutes } from './http/routes/authRoutes.js';
 import { registerInstanceRoutes } from './http/routes/instanceRoutes.js';
@@ -27,6 +28,7 @@ export interface AppContext {
   instanceService: InstanceService;
   adminService: AdminService;
   backupService: BackupService;
+  siteBackupService: SiteBackupService;
 }
 
 /**
@@ -48,6 +50,7 @@ export async function buildApp(deps: AppDeps): Promise<AppContext> {
   const instanceService = new InstanceService(store, config);
   const adminService = new AdminService(store, instanceService, config);
   const backupService = new BackupService(store, config);
+  const siteBackupService = new SiteBackupService(store, instanceService, config);
 
   registerAuthDecorators(app);
   registerOriginCheck(app, config);
@@ -55,9 +58,16 @@ export async function buildApp(deps: AppDeps): Promise<AppContext> {
   registerErrorHandler(app);
 
   registerAuthRoutes(app, authService, config);
-  registerInstanceRoutes(app, instanceService, config);
-  registerAdminRoutes(app, adminService, backupService, config);
-  registerWebRoutes(app, { config, store, instanceService, adminService, backupService });
+  registerInstanceRoutes(app, instanceService, siteBackupService, config);
+  registerAdminRoutes(app, adminService, backupService, siteBackupService, config);
+  registerWebRoutes(app, {
+    config,
+    store,
+    instanceService,
+    adminService,
+    backupService,
+    siteBackupService,
+  });
 
-  return { app, authService, instanceService, adminService, backupService };
+  return { app, authService, instanceService, adminService, backupService, siteBackupService };
 }

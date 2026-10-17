@@ -38,6 +38,7 @@ export class InstanceService {
     try {
       const instance = await this.store.createInstance({
         ownerUserId: owner.id,
+        companyName: request.companyName.trim(),
         siteName: naming.siteName,
         hostname: naming.hostname,
         idempotencyKey: request.idempotencyKey,
@@ -114,6 +115,46 @@ export class InstanceService {
     return this.getFor(user, instanceId);
   }
 
+  async updateFor(user: User, instanceId: string, companyName: string): Promise<Instance> {
+    const instance = await this.getFor(user, instanceId);
+    if (instance.status === 'deleting') {
+      throw new ValidationError('This instance is being permanently deleted');
+    }
+    const name = companyName.trim();
+    if (!name || name.length > 100) {
+      throw new ValidationError('Company name must be between 1 and 100 characters');
+    }
+    const updated = await this.store.updateInstance(instanceId, { companyName: name });
+    await this.store.recordAudit({
+      actorUserId: user.id,
+      action: 'instance.update',
+      targetType: 'instance',
+      targetId: instanceId,
+      metadata: { companyName: name },
+    });
+    return updated;
+  }
+
+  async deleteFor(user: User, instanceId: string, confirmation: string): Promise<Instance> {
+    const instance = await this.getFor(user, instanceId);
+    if (confirmation !== instance.hostname) {
+      throw new ValidationError(`Type ${instance.hostname} exactly to confirm permanent deletion`);
+    }
+    if (instance.status === 'deleting') return instance;
+    if (instance.status !== 'ready' && instance.status !== 'failed') {
+      throw new ValidationError('Only ready or failed instances can be permanently deleted');
+    }
+    await this.store.queueInstanceDeletion(instanceId, this.config.PROVISION_MAX_ATTEMPTS);
+    await this.store.recordAudit({
+      actorUserId: user.id,
+      action: 'instance.delete_requested',
+      targetType: 'instance',
+      targetId: instanceId,
+      metadata: { hostname: instance.hostname, siteName: instance.siteName },
+    });
+    return (await this.store.findInstanceById(instanceId)) ?? instance;
+  }
+
   /** Admin-only: re-queue a failed instance's provisioning job. */
   async retry(actor: User, instanceId: string): Promise<Instance> {
     if (actor.role !== 'admin') throw new ForbiddenError('Administrator role required');
@@ -126,6 +167,10 @@ export class InstanceService {
       instance.status === 'configuring';
     if (inFlight) {
       throw new ValidationError('Instance is already being provisioned');
+    }
+    const latestJob = await this.store.findLatestJobForInstance(instanceId);
+    if (latestJob && latestJob.type !== 'provision') {
+      throw new ValidationError('Use the matching backup or deletion action to retry this task');
     }
     await this.store.resetJobForRetry(instanceId, this.config.PROVISION_MAX_ATTEMPTS);
     const updated = await this.store.updateInstance(instanceId, {

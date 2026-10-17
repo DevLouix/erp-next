@@ -4,6 +4,7 @@ import type { Instance, User } from '../domain/types.js';
 export function serializeInstance(instance: Instance, config: AppConfig) {
   return {
     id: instance.id,
+    companyName: instance.companyName,
     siteName: instance.siteName,
     hostname: instance.hostname,
     status: instance.status,

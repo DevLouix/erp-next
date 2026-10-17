@@ -29,13 +29,17 @@ const snapshotUserSchema = z.object({
 const snapshotInstanceSchema = z.object({
   id: z.string().min(1),
   ownerUserId: z.string().min(1),
+  companyName: z.string().optional(),
   siteName: z.string().min(1),
   hostname: z.string().min(1),
   status: z.enum(INSTANCE_STATUSES),
   errorMessage: z.string().nullable().optional().transform((v) => v ?? null),
   createdAt: isoDate,
   updatedAt: isoDate,
-});
+}).transform((instance) => ({
+  ...instance,
+  companyName: instance.companyName?.trim() || instance.hostname.split('.')[0] || instance.siteName,
+}));
 
 const snapshotJobSchema = z.object({
   id: z.string().min(1),
@@ -95,6 +99,7 @@ export class BackupService {
     const snapshotInstances: SnapshotInstance[] = instances.map((i) => ({
       id: i.id,
       ownerUserId: i.ownerUserId,
+      companyName: i.companyName,
       siteName: i.siteName,
       hostname: i.hostname,
       status: i.status,
@@ -174,8 +179,8 @@ export class BackupService {
   /**
    * Validate and (optionally) apply a snapshot. Merge semantics: users are
    * matched by OAuth subject and instances by site name, so importing the same
-   * backup twice is safe. Non-ready instances are always (re-)queued so the
-   * target deployment provisions them.
+   * backup twice is safe. Non-ready instances are re-queued for provisioning,
+   * except sites captured during deletion, which must be reviewed first.
    */
   async importState(
     actor: User,
@@ -249,16 +254,22 @@ export class BackupService {
 
       const naming = this.applyDomainOverride(snapshotInstance, options.baseDomainOverride ?? null);
       const existing = await this.store.findInstanceBySiteName(naming.siteName);
+      const wasDeleting = snapshotInstance.status === 'deleting';
+      const importedStatus = wasDeleting ? 'failed' : snapshotInstance.status;
+      const importedErrorMessage = wasDeleting
+        ? 'Source snapshot captured during permanent deletion. Review the source site backup before provisioning.'
+        : snapshotInstance.errorMessage;
 
       if (existing) {
         summary.instances.updated += 1;
         if (!options.dryRun) {
           await this.store.importInstance({
             ownerUserId,
+            companyName: snapshotInstance.companyName,
             siteName: naming.siteName,
             hostname: naming.hostname,
-            status: snapshotInstance.status,
-            errorMessage: snapshotInstance.errorMessage,
+            status: importedStatus,
+            errorMessage: importedErrorMessage,
           });
         }
       } else {
@@ -266,16 +277,17 @@ export class BackupService {
         if (!options.dryRun) {
           await this.store.importInstance({
             ownerUserId,
+            companyName: snapshotInstance.companyName,
             siteName: naming.siteName,
             hostname: naming.hostname,
-            status: snapshotInstance.status,
-            errorMessage: snapshotInstance.errorMessage,
+            status: importedStatus,
+            errorMessage: importedErrorMessage,
           });
         }
       }
 
       // Re-provision anything that is not ready on the target deployment.
-      if (snapshotInstance.status !== 'ready') {
+      if (snapshotInstance.status !== 'ready' && !wasDeleting) {
         summary.jobsRequeued += 1;
         if (!options.dryRun) {
           const imported = await this.store.findInstanceBySiteName(naming.siteName);

@@ -27,6 +27,7 @@
     "backup:import": "tsx src/scripts/backup.ts import"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1152.0",
     "@fastify/cookie": "^11.0.2",
     "@fastify/formbody": "^8.0.2",
     "@prisma/client": "^6.3.1",

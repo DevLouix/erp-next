@@ -11,6 +11,9 @@ import type {
   OAuthTransaction,
   PlatformSnapshot,
   ProvisioningJob,
+  SiteBackup,
+  SiteBackupPart,
+  SiteBackupSettings,
   Session,
   User,
   UserRole,
@@ -26,6 +29,7 @@ interface UserPatch {
 }
 
 interface InstancePatch {
+  companyName?: string;
   status?: InstanceStatus;
   errorMessage?: string | null;
 }
@@ -38,6 +42,16 @@ export class MemoryStore implements Store {
   private users = new Map<string, User>();
   private instances = new Map<string, Instance>();
   private jobs = new Map<string, ProvisioningJob>();
+  private siteBackups = new Map<string, SiteBackup>();
+  private siteBackupSettings: SiteBackupSettings = {
+    automaticEnabled: false,
+    intervalHours: 24,
+    nextRunAt: null,
+    s3Endpoint: null,
+    s3Bucket: null,
+    s3Region: null,
+    updatedAt: new Date(0),
+  };
   private sessions = new Map<string, Session>();
   private oauthTransactions = new Map<string, OAuthTransaction>();
   private audits: AuditLogEntry[] = [];
@@ -111,6 +125,7 @@ export class MemoryStore implements Store {
     const instance: Instance = {
       id: this.nextId('ins'),
       ownerUserId: input.ownerUserId,
+      companyName: input.companyName,
       siteName: input.siteName,
       hostname: input.hostname,
       status: 'queued',
@@ -167,12 +182,187 @@ export class MemoryStore implements Store {
     return updated;
   }
 
+  async queueInstanceDeletion(instanceId: string, maxAttempts: number): Promise<ProvisioningJob> {
+    const instance = this.instances.get(instanceId);
+    if (!instance) throw new Error(`Instance not found: ${instanceId}`);
+    const latest = await this.findLatestJobForInstance(instanceId);
+    if (latest && (latest.status === 'queued' || latest.status === 'running')) {
+      throw new DuplicateError('active_job_for_instance', instanceId);
+    }
+    const now = new Date();
+    const job: ProvisioningJob = latest
+      ? {
+          ...latest,
+          type: 'delete',
+        siteBackupId: null,
+          status: 'queued',
+          attempts: 0,
+          maxAttempts,
+          nextRunAt: now,
+          lockedAt: null,
+          lastError: null,
+          updatedAt: now,
+        }
+      : {
+          id: this.nextId('job'),
+          instanceId,
+          type: 'delete',
+          siteBackupId: null,
+          status: 'queued',
+          attempts: 0,
+          maxAttempts,
+          nextRunAt: now,
+          lockedAt: null,
+          lastError: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+    this.jobs.set(job.id, job);
+    this.instances.set(instanceId, { ...instance, status: 'deleting', errorMessage: null, updatedAt: now });
+    return job;
+  }
+
+  async deleteInstance(id: string): Promise<void> {
+    this.instances.delete(id);
+    for (const [jobId, job] of this.jobs) {
+      if (job.instanceId === id) this.jobs.delete(jobId);
+    }
+  }
+
+  async queueSiteBackup(
+    instance: Instance,
+    actorUserId: string,
+    maxAttempts: number,
+  ): Promise<SiteBackup> {
+    const activeJob = await this.findLatestJobForInstance(instance.id);
+    if (activeJob && (activeJob.status === 'queued' || activeJob.status === 'running')) {
+      throw new DuplicateError('active_job_for_instance', instance.id);
+    }
+    const backup = await this.createSiteBackupRecord(instance.siteName, instance.hostname, actorUserId);
+    await this.createJob({
+      instanceId: instance.id,
+      maxAttempts,
+      type: 'backup',
+      siteBackupId: backup.id,
+    });
+    return backup;
+  }
+
+  async createSiteBackupRecord(
+    siteName: string,
+    hostname: string,
+    actorUserId: string | null,
+  ): Promise<SiteBackup> {
+    const backup: SiteBackup = {
+      id: this.nextId('sitebak'),
+      siteName,
+      hostname,
+      status: 'queued',
+      parts: [],
+      createdByUserId: actorUserId,
+      errorMessage: null,
+      createdAt: new Date(),
+      completedAt: null,
+    };
+    this.siteBackups.set(backup.id, backup);
+    return backup;
+  }
+
+  async updateSiteBackup(
+    id: string,
+    patch: Partial<{
+      status: SiteBackup['status'];
+      parts: SiteBackupPart[];
+      errorMessage: string | null;
+      completedAt: Date | null;
+    }>,
+  ): Promise<SiteBackup> {
+    const backup = this.siteBackups.get(id);
+    if (!backup) throw new Error(`Site backup not found: ${id}`);
+    const updated = { ...backup, ...patch };
+    this.siteBackups.set(id, updated);
+    return updated;
+  }
+
+  async findSiteBackup(id: string): Promise<SiteBackup | null> {
+    return this.siteBackups.get(id) ?? null;
+  }
+
+  async listSiteBackups(siteName: string): Promise<SiteBackup[]> {
+    return [...this.siteBackups.values()]
+      .filter((backup) => backup.siteName === siteName)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
+  async listSiteBackupsByOwner(ownerUserId: string): Promise<SiteBackup[]> {
+    return [...this.siteBackups.values()]
+      .filter((backup) => backup.createdByUserId === ownerUserId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
+  async listAllSiteBackups(): Promise<SiteBackup[]> {
+    return [...this.siteBackups.values()].sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+    );
+  }
+
+  async getSiteBackupSettings(): Promise<SiteBackupSettings> {
+    return this.siteBackupSettings;
+  }
+
+  async updateSiteBackupSettings(
+    settings: Pick<
+      SiteBackupSettings,
+      'automaticEnabled' | 'intervalHours' | 's3Endpoint' | 's3Bucket' | 's3Region'
+    >,
+    now: Date,
+  ): Promise<SiteBackupSettings> {
+    this.siteBackupSettings = {
+      ...settings,
+      nextRunAt: settings.automaticEnabled
+        ? new Date(now.getTime() + settings.intervalHours * 60 * 60 * 1000)
+        : null,
+      updatedAt: now,
+    };
+    return this.siteBackupSettings;
+  }
+
+  async queueScheduledSiteBackups(now: Date, maxAttempts: number): Promise<number> {
+    const settings = this.siteBackupSettings;
+    if (!settings.automaticEnabled || !settings.nextRunAt || settings.nextRunAt > now) return 0;
+    this.siteBackupSettings = {
+      ...settings,
+      nextRunAt: new Date(now.getTime() + settings.intervalHours * 60 * 60 * 1000),
+      updatedAt: now,
+    };
+    let queued = 0;
+    for (const instance of this.instances.values()) {
+      if (instance.status !== 'ready') continue;
+      const latest = await this.findLatestJobForInstance(instance.id);
+      if (latest && (latest.status === 'queued' || latest.status === 'running')) continue;
+      const backup = await this.createSiteBackupRecord(
+        instance.siteName,
+        instance.hostname,
+        instance.ownerUserId,
+      );
+      await this.createJob({
+        instanceId: instance.id,
+        maxAttempts,
+        type: 'backup',
+        siteBackupId: backup.id,
+      });
+      queued += 1;
+    }
+    return queued;
+  }
+
   async importInstance(input: ImportInstanceInput): Promise<Instance> {
     const existing = await this.findInstanceBySiteName(input.siteName);
     if (existing) {
       const updated: Instance = {
         ...existing,
         ownerUserId: input.ownerUserId,
+        companyName: input.companyName,
         hostname: input.hostname,
         status: input.status,
         errorMessage: input.errorMessage,
@@ -185,6 +375,7 @@ export class MemoryStore implements Store {
     const instance: Instance = {
       id: this.nextId('ins'),
       ownerUserId: input.ownerUserId,
+      companyName: input.companyName,
       siteName: input.siteName,
       hostname: input.hostname,
       status: input.status,
@@ -207,6 +398,8 @@ export class MemoryStore implements Store {
     const job: ProvisioningJob = {
       id: this.nextId('job'),
       instanceId: input.instanceId,
+      type: input.type ?? 'provision',
+      siteBackupId: input.siteBackupId ?? null,
       status: 'queued',
       attempts: 0,
       maxAttempts: input.maxAttempts,
@@ -295,7 +488,11 @@ export class MemoryStore implements Store {
   async findLatestJobForInstance(instanceId: string): Promise<ProvisioningJob | null> {
     const jobs = [...this.jobs.values()]
       .filter((j) => j.instanceId === instanceId)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      .sort(
+        (a, b) =>
+          b.createdAt.getTime() - a.createdAt.getTime() ||
+          b.id.localeCompare(a.id),
+      );
     return jobs[0] ?? null;
   }
 
@@ -311,6 +508,8 @@ export class MemoryStore implements Store {
     }
     return this.patchJob(latest.id, {
       status: 'queued',
+      type: 'provision',
+      siteBackupId: null,
       attempts: 0,
       maxAttempts,
       nextRunAt: now,

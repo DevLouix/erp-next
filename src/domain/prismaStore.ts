@@ -1,4 +1,5 @@
 import { Prisma, type PrismaClient } from '@prisma/client';
+import { z } from 'zod';
 import type { Store } from './store.js';
 import { DuplicateError } from './errors.js';
 import type {
@@ -10,10 +11,14 @@ import type {
   ImportInstanceInput,
   Instance,
   InstanceStatus,
+  JobType,
   OAuthTransaction,
   PlatformSnapshot,
   ProvisioningJob,
   Session,
+  SiteBackup,
+  SiteBackupPart,
+  SiteBackupSettings,
   User,
   UserRole,
 } from './types.js';
@@ -34,6 +39,7 @@ function toUser(row: {
 function toInstance(row: {
   id: string;
   ownerUserId: string;
+  companyName: string;
   siteName: string;
   hostname: string;
   status: string;
@@ -48,6 +54,8 @@ function toInstance(row: {
 function toJob(row: {
   id: string;
   instanceId: string;
+  type: string;
+  siteBackupId: string | null;
   status: string;
   attempts: number;
   maxAttempts: number;
@@ -57,7 +65,48 @@ function toJob(row: {
   createdAt: Date;
   updatedAt: Date;
 }): ProvisioningJob {
-  return { ...row, status: row.status as ProvisioningJob['status'] };
+  return {
+    ...row,
+    type: row.type as JobType,
+    status: row.status as ProvisioningJob['status'],
+  };
+}
+
+const siteBackupPartSchema = z.object({
+  kind: z.enum(['database', 'public-files', 'private-files', 'site-config']),
+  relativePath: z.string(),
+  sizeBytes: z.number().int().nonnegative(),
+  s3ObjectKey: z.string().optional(),
+});
+
+function toSiteBackup(row: {
+  id: string;
+  siteName: string;
+  hostname: string;
+  status: string;
+  parts: unknown;
+  createdByUserId: string | null;
+  errorMessage: string | null;
+  createdAt: Date;
+  completedAt: Date | null;
+}): SiteBackup {
+  return {
+    ...row,
+    status: row.status as SiteBackup['status'],
+    parts: z.array(siteBackupPartSchema).parse(row.parts),
+  };
+}
+
+function toSiteBackupSettings(row: {
+  automaticEnabled: boolean;
+  intervalHours: number;
+  nextRunAt: Date | null;
+  s3Endpoint: string | null;
+  s3Bucket: string | null;
+  s3Region: string | null;
+  updatedAt: Date;
+}): SiteBackupSettings {
+  return row;
 }
 
 function toSession(row: {
@@ -149,6 +198,7 @@ export class PrismaStore implements Store {
       const row = await this.prisma.instance.create({
         data: {
           ownerUserId: input.ownerUserId,
+          companyName: input.companyName,
           siteName: input.siteName,
           hostname: input.hostname,
           idempotencyKey: input.idempotencyKey,
@@ -209,10 +259,228 @@ export class PrismaStore implements Store {
 
   async updateInstance(
     id: string,
-    patch: Partial<{ status: InstanceStatus; errorMessage: string | null }>,
+    patch: Partial<{ companyName: string; status: InstanceStatus; errorMessage: string | null }>,
   ): Promise<Instance> {
     const row = await this.prisma.instance.update({ where: { id }, data: patch });
     return toInstance(row);
+  }
+
+  async queueInstanceDeletion(instanceId: string, maxAttempts: number): Promise<ProvisioningJob> {
+    return this.prisma.$transaction(async (tx) => {
+      const instance = await tx.instance.findUnique({ where: { id: instanceId } });
+      if (!instance) throw new Error(`Instance not found: ${instanceId}`);
+      const active = await tx.provisioningJob.findFirst({
+        where: {
+          instanceId,
+          status: { in: ['queued', 'running'] },
+        },
+      });
+      if (active) throw new DuplicateError('active_job_for_instance', instanceId);
+      const latest = await tx.provisioningJob.findFirst({
+        where: { instanceId },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
+      const now = new Date();
+      const job = latest
+        ? await tx.provisioningJob.update({
+            where: { id: latest.id },
+            data: {
+              type: 'delete',
+              status: 'queued',
+              attempts: 0,
+              maxAttempts,
+              nextRunAt: now,
+              lockedAt: null,
+              lastError: null,
+              siteBackupId: null,
+            },
+          })
+        : await tx.provisioningJob.create({
+            data: { instanceId, type: 'delete', maxAttempts },
+          });
+      await tx.instance.update({
+        where: { id: instanceId },
+        data: { status: 'deleting', errorMessage: null },
+      });
+      return toJob(job);
+    });
+  }
+
+  async deleteInstance(id: string): Promise<void> {
+    await this.prisma.instance.delete({ where: { id } });
+  }
+
+  async queueSiteBackup(
+    instance: Instance,
+    actorUserId: string,
+    maxAttempts: number,
+  ): Promise<SiteBackup> {
+    return this.prisma.$transaction(async (tx) => {
+      const active = await tx.provisioningJob.findFirst({
+        where: {
+          instanceId: instance.id,
+          status: { in: ['queued', 'running'] },
+        },
+      });
+      if (active) throw new DuplicateError('active_job_for_instance', instance.id);
+      const backup = await tx.siteBackup.create({
+        data: {
+          siteName: instance.siteName,
+          hostname: instance.hostname,
+          createdByUserId: actorUserId,
+        },
+      });
+      await tx.provisioningJob.create({
+        data: {
+          instanceId: instance.id,
+          type: 'backup',
+          siteBackupId: backup.id,
+          maxAttempts,
+        },
+      });
+      return toSiteBackup(backup);
+    });
+  }
+
+  async createSiteBackupRecord(
+    siteName: string,
+    hostname: string,
+    actorUserId: string | null,
+  ): Promise<SiteBackup> {
+    const backup = await this.prisma.siteBackup.create({
+      data: { siteName, hostname, createdByUserId: actorUserId },
+    });
+    return toSiteBackup(backup);
+  }
+
+  async updateSiteBackup(
+    id: string,
+    patch: Partial<{
+      status: SiteBackup['status'];
+      parts: SiteBackupPart[];
+      errorMessage: string | null;
+      completedAt: Date | null;
+    }>,
+  ): Promise<SiteBackup> {
+    const { parts, ...fields } = patch;
+    const jsonParts: Prisma.InputJsonValue[] | undefined = parts?.map((part) => ({
+      kind: part.kind,
+      relativePath: part.relativePath,
+      sizeBytes: part.sizeBytes,
+    }));
+    const backup = await this.prisma.siteBackup.update({
+      where: { id },
+      data: { ...fields, ...(jsonParts ? { parts: jsonParts } : {}) },
+    });
+    return toSiteBackup(backup);
+  }
+
+  async findSiteBackup(id: string): Promise<SiteBackup | null> {
+    const backup = await this.prisma.siteBackup.findUnique({ where: { id } });
+    return backup ? toSiteBackup(backup) : null;
+  }
+
+  async listSiteBackups(siteName: string): Promise<SiteBackup[]> {
+    const backups = await this.prisma.siteBackup.findMany({
+      where: { siteName },
+      orderBy: { createdAt: 'desc' },
+    });
+    return backups.map(toSiteBackup);
+  }
+
+  async listAllSiteBackups(): Promise<SiteBackup[]> {
+    const backups = await this.prisma.siteBackup.findMany({
+      orderBy: { createdAt: 'desc' },
+    });
+    return backups.map(toSiteBackup);
+  }
+
+  async listSiteBackupsByOwner(ownerUserId: string): Promise<SiteBackup[]> {
+    const backups = await this.prisma.siteBackup.findMany({
+      where: { createdByUserId: ownerUserId },
+      orderBy: { createdAt: 'desc' },
+    });
+    return backups.map(toSiteBackup);
+  }
+
+  async getSiteBackupSettings(): Promise<SiteBackupSettings> {
+    const settings = await this.prisma.siteBackupSettings.findUnique({ where: { id: 1 } });
+    return settings ?? {
+      automaticEnabled: false,
+      intervalHours: 24,
+      nextRunAt: null,
+      s3Endpoint: null,
+      s3Bucket: null,
+      s3Region: null,
+      updatedAt: new Date(0),
+    };
+  }
+
+  async updateSiteBackupSettings(
+    settings: Pick<
+      SiteBackupSettings,
+      'automaticEnabled' | 'intervalHours' | 's3Endpoint' | 's3Bucket' | 's3Region'
+    >,
+    now: Date,
+  ): Promise<SiteBackupSettings> {
+    const nextRunAt = settings.automaticEnabled
+      ? new Date(now.getTime() + settings.intervalHours * 60 * 60 * 1000)
+      : null;
+    const result = await this.prisma.siteBackupSettings.upsert({
+      where: { id: 1 },
+      create: { id: 1, ...settings, nextRunAt },
+      update: { ...settings, nextRunAt },
+    });
+    return toSiteBackupSettings(result);
+  }
+
+  async queueScheduledSiteBackups(now: Date, maxAttempts: number): Promise<number> {
+    return this.prisma.$transaction(async (tx) => {
+      const settings = await tx.siteBackupSettings.findUnique({ where: { id: 1 } });
+      if (!settings?.automaticEnabled || !settings.nextRunAt || settings.nextRunAt > now) {
+        return 0;
+      }
+      const claimed = await tx.siteBackupSettings.updateMany({
+        where: {
+          id: 1,
+          automaticEnabled: true,
+          nextRunAt: { lte: now },
+        },
+        data: {
+          nextRunAt: new Date(now.getTime() + settings.intervalHours * 60 * 60 * 1000),
+        },
+      });
+      if (claimed.count === 0) return 0;
+
+      const instances = await tx.instance.findMany({ where: { status: 'ready' } });
+      let queued = 0;
+      for (const instance of instances) {
+        const active = await tx.provisioningJob.findFirst({
+          where: {
+            instanceId: instance.id,
+            status: { in: ['queued', 'running'] },
+          },
+        });
+        if (active) continue;
+        const backup = await tx.siteBackup.create({
+          data: {
+            siteName: instance.siteName,
+            hostname: instance.hostname,
+            createdByUserId: instance.ownerUserId,
+          },
+        });
+        await tx.provisioningJob.create({
+          data: {
+            instanceId: instance.id,
+            type: 'backup',
+            siteBackupId: backup.id,
+            maxAttempts,
+          },
+        });
+        queued += 1;
+      }
+      return queued;
+    });
   }
 
   async importInstance(input: ImportInstanceInput): Promise<Instance> {
@@ -220,6 +488,7 @@ export class PrismaStore implements Store {
       where: { siteName: input.siteName },
       create: {
         ownerUserId: input.ownerUserId,
+        companyName: input.companyName,
         siteName: input.siteName,
         hostname: input.hostname,
         status: input.status,
@@ -227,6 +496,7 @@ export class PrismaStore implements Store {
       },
       update: {
         ownerUserId: input.ownerUserId,
+        companyName: input.companyName,
         hostname: input.hostname,
         status: input.status,
         errorMessage: input.errorMessage,
@@ -237,7 +507,12 @@ export class PrismaStore implements Store {
 
   async createJob(input: CreateJobInput): Promise<ProvisioningJob> {
     const row = await this.prisma.provisioningJob.create({
-      data: { instanceId: input.instanceId, maxAttempts: input.maxAttempts },
+      data: {
+        instanceId: input.instanceId,
+        maxAttempts: input.maxAttempts,
+        type: input.type ?? 'provision',
+        siteBackupId: input.siteBackupId ?? null,
+      },
     });
     return toJob(row);
   }
@@ -325,7 +600,7 @@ export class PrismaStore implements Store {
   async findLatestJobForInstance(instanceId: string): Promise<ProvisioningJob | null> {
     const row = await this.prisma.provisioningJob.findFirst({
       where: { instanceId },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });
     return row ? toJob(row) : null;
   }
@@ -343,11 +618,13 @@ export class PrismaStore implements Store {
       where: { id: latest.id },
       data: {
         status: 'queued',
+        type: 'provision',
         attempts: 0,
         maxAttempts,
         nextRunAt: now,
         lockedAt: null,
         lastError: null,
+        siteBackupId: null,
       },
     });
     return toJob(row);

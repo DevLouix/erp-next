@@ -66,23 +66,28 @@ ports you change.
 
 Services:
 
+Services are namespaced: `platform-*` for the hosting platform, `frappe-*` for the
+Bench. Under the pinned Compose project name (`COMPOSE_PROJECT_NAME`, default
+`erpnext`) containers appear as `erpnext-platform-api-1`, `erpnext-frappe-db-1`, etc.
+
 | Service | Role |
 | --- | --- |
 | `platform-api` | Fastify API + dashboard (also runs `prisma migrate deploy` on boot). |
 | `platform-worker` | Provisioning worker. Built **from the ERPNext image** so it has `bench` and the shared `sites` volume. |
-| `postgres` | Platform metadata database. |
-| `backend`, `frontend`, `websocket` | Frappe web/app/ingress (`frontend` publishes `8080`). |
-| `db` | Shared MariaDB; each site gets its own database on it. |
-| `queue-short`, `queue-long`, `scheduler` | Frappe background workers/scheduler. |
-| `redis-cache`, `redis-queue` | Frappe cache and queue brokers. |
-| `configurator`, `create-site` | One-shot: configure `common_site_config.json`, then create `BOOTSTRAP_SITE`. |
-| `postgres-test` | Test-only DB on host port `5433` (opt-in integration test). |
+| `platform-postgres` | Platform metadata database. |
+| `frappe-backend`, `frappe-frontend`, `frappe-websocket` | Frappe web/app/ingress (`frappe-frontend` publishes `8080`). |
+| `frappe-db` | Shared MariaDB; each site gets its own database on it. |
+| `frappe-queue-short`, `frappe-queue-long`, `frappe-scheduler` | Frappe background workers/scheduler. |
+| `frappe-redis-cache`, `frappe-redis-queue` | Frappe cache and queue brokers. |
+| `frappe-configurator`, `frappe-create-site` | One-shot: configure `common_site_config.json`, then create `BOOTSTRAP_SITE`. |
+| `platform-postgres-test` | Test-only DB on host port `5433` (opt-in integration test). |
 
 The Frappe services follow the upstream
 [`frappe_docker`](https://github.com/frappe/frappe_docker) `pwd.yml`; pin
 `ERPNEXT_VERSION` in `.env` to the version you deploy. The worker regenerates
 nginx vhosts best-effort (`PROVISION_ROUTING_MODE=best-effort`) because nginx runs
-as the separate `frontend` service and the **HTTP health check is the real gate**.
+as the separate `frappe-frontend` service and the **HTTP health check is the real
+gate**.
 
 ## Quick start (run the platform directly)
 

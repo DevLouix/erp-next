@@ -17,7 +17,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
-    "db:up": "docker compose up -d postgres",
+    "db:up": "docker compose up -d platform-postgres platform-postgres-test",
     "db:down": "docker compose down",
     "stack:up": "docker compose up -d --build",
     "stack:down": "docker compose down",

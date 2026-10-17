@@ -270,6 +270,9 @@ the database and files. Local archives are retained on the persistent
 `frappe-backups` volume. Automatic retention deletion is
 disabled; off-host backup of the volume is still required for disaster recovery.
 Test restores on a non-production site using a compatible Frappe/ERPNext version.
+The backup-volume initializer assigns ownership to the official Frappe image's
+runtime identity (UID 1000, GID 0); it uses numeric IDs because the production
+image does not necessarily define a group named `frappe`.
 
 Permanent instance deletion requires typing the exact hostname and confirming
 again in the browser. Before `bench drop-site` runs, the worker creates and

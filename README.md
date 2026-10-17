@@ -47,6 +47,10 @@ backed up here; each site's own ERPNext data stays in MariaDB.
 
 ## One-command stack
 
+> All deployment options (direct processes, single-host Compose, an existing
+> reverse proxy, Dokploy, and Kubernetes) are compared in
+> [`docs/deployment.md`](./docs/deployment.md).
+
 `docker-compose.yml` runs the **entire** product — the Frappe/ERPNext Bench and the
 hosting platform — on one host:
 

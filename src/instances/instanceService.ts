@@ -155,22 +155,15 @@ export class InstanceService {
     return (await this.store.findInstanceById(instanceId)) ?? instance;
   }
 
-  /** Admin-only: re-queue a failed instance's provisioning job. */
+  /** Re-queue an owner's failed provisioning job, or any failed job for an admin. */
   async retry(actor: User, instanceId: string): Promise<Instance> {
-    if (actor.role !== 'admin') throw new ForbiddenError('Administrator role required');
-    const instance = await this.store.findInstanceById(instanceId);
-    if (!instance) throw new NotFoundError('Instance not found');
-    const inFlight =
-      instance.status === 'queued' ||
-      instance.status === 'provisioning' ||
-      instance.status === 'installing' ||
-      instance.status === 'configuring';
-    if (inFlight) {
-      throw new ValidationError('Instance is already being provisioned');
+    const instance = await this.getFor(actor, instanceId);
+    if (instance.status !== 'failed') {
+      throw new ValidationError('Only failed instances can be retried');
     }
     const latestJob = await this.store.findLatestJobForInstance(instanceId);
-    if (latestJob && latestJob.type !== 'provision') {
-      throw new ValidationError('Use the matching backup or deletion action to retry this task');
+    if (!latestJob || latestJob.type !== 'provision' || latestJob.status !== 'failed') {
+      throw new ValidationError('Only failed provisioning jobs can be retried');
     }
     await this.store.resetJobForRetry(instanceId, this.config.PROVISION_MAX_ATTEMPTS);
     const updated = await this.store.updateInstance(instanceId, {

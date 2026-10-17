@@ -70,6 +70,8 @@ describe('cross-customer isolation', () => {
     });
 
     const id = await createInstance(alice.cookie, 'Alice Corp');
+    const job = await ctx.store.findLatestJobForInstance(id);
+    await ctx.store.failJob(job!.id, 'bench failed');
     await ctx.store.updateInstance(id, { status: 'failed', errorMessage: 'bench failed' });
 
     const all = await ctx.app.inject({

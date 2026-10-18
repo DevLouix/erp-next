@@ -35,6 +35,11 @@ describe('dashboard presentation', () => {
     expect(dashboard.body).toContain('class="manage-link"');
     expect(dashboard.body).toContain('data-theme-toggle');
     expect(dashboard.body).toContain("localStorage.setItem('erpnext-hosting-theme'");
+    expect(dashboard.body).toContain('class="brand"');
+    expect(dashboard.body).toContain('--bg: #f7f6f2');
+    expect(dashboard.body).toContain('backdrop-filter: blur(16px)');
+    expect(dashboard.body).toContain('@media (max-width: 700px)');
+    expect(dashboard.body).toContain("prefers-color-scheme: dark");
     expect(dashboard.body).toContain('name="adminPassword"');
     expect(dashboard.body).toContain('name="confirmAdminPassword"');
     expect(dashboard.body).toContain('data-password-generate');

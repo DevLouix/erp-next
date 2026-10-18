@@ -50,6 +50,37 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
+function passwordFields(
+  passwordId: string,
+  confirmId: string,
+  passwordLabel: string,
+  confirmLabel: string,
+  disabled = false,
+): string {
+  const disabledAttribute = disabled ? 'disabled' : '';
+  return `
+    <div class="password-group">
+      <label for="${passwordId}">${passwordLabel}</label>
+      <div class="password-control">
+        <input id="${passwordId}" class="password-input" type="password" name="adminPassword" autocomplete="new-password" minlength="12" maxlength="128" required data-password-value ${disabledAttribute}>
+        <button class="action secondary password-control-button" type="button" data-password-toggle aria-controls="${passwordId}" aria-label="Show password" ${disabledAttribute}>Show</button>
+      </div>
+      <div class="password-feedback">
+        <progress class="password-meter" max="5" value="0" aria-label="Password strength" data-password-meter></progress>
+        <span class="muted" aria-live="polite" data-password-strength>Use at least 12 characters.</span>
+      </div>
+      <button class="action secondary password-generate" type="button" data-password-generate ${disabledAttribute}>Generate a strong password</button>
+    </div>
+    <div class="password-group">
+      <label for="${confirmId}">${confirmLabel}</label>
+      <div class="password-control">
+        <input id="${confirmId}" class="password-input" type="password" name="confirmAdminPassword" autocomplete="new-password" minlength="12" maxlength="128" required data-password-confirm ${disabledAttribute}>
+        <button class="action secondary password-control-button" type="button" data-password-toggle aria-controls="${confirmId}" aria-label="Show confirmation password" ${disabledAttribute}>Show</button>
+      </div>
+      <span class="muted" aria-live="polite" data-password-match></span>
+    </div>`;
+}
+
 function layout(title: string, body: string, user?: User | null): string {
   const nav = user
     ? `<nav>
@@ -93,6 +124,18 @@ function layout(title: string, body: string, user?: User | null): string {
   form.row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: end; }
   label { display: block; font-size: .82rem; color: var(--muted); margin-bottom: .35rem; }
   input[type=text], input[type=password], input[type=file] { padding: .68rem .8rem; border-radius: 8px; border: 1px solid #40516a; background: var(--bg); color: inherit; min-width: min(260px, 100%); font: inherit; }
+  .password-group { flex: 1 1 280px; min-width: min(260px, 100%); }
+  .password-control { display: flex; align-items: stretch; gap: .45rem; }
+  .password-input { width: 100%; min-width: 0 !important; }
+  .password-control-button { flex: 0 0 5rem; padding: .45rem .6rem !important; }
+  .password-feedback { display: flex; align-items: center; gap: .6rem; min-height: 1.5rem; margin-top: .25rem; }
+  .password-meter { width: 5rem; height: .5rem; accent-color: #dc2626; }
+  .password-meter[data-strength="fair"] { accent-color: #d97706; }
+  .password-meter[data-strength="strong"] { accent-color: #059669; }
+  .password-match[data-match="yes"] { color: #34d399; }
+  .password-match[data-match="no"] { color: #fca5a5; }
+  .password-generate { margin-top: .4rem; padding: .4rem .65rem !important; font-size: .82rem !important; }
+  input[aria-invalid="true"] { border-color: #ef4444; }
   button[type=submit], button.action { background: #2563eb; color: white; border: 1px solid #3b82f6; border-radius: 8px; padding: .65rem 1rem; cursor: pointer; font: inherit; font-weight: 600; }
   button.danger { background: #991b1b; border-color: #dc2626; }
   button.secondary { background: var(--surface-raised); border-color: #40516a; }
@@ -157,6 +200,141 @@ function layout(title: string, body: string, user?: User | null): string {
         button.setAttribute('aria-label', 'Switch to ' + (theme === 'dark' ? 'light' : 'dark') + ' theme');
         button.setAttribute('title', 'Switch to ' + (theme === 'dark' ? 'light' : 'dark') + ' theme');
         button.setAttribute('aria-pressed', String(theme === 'light'));
+      });
+    })();
+  </script>
+  <script>
+    (function () {
+      function secureRandomInt(max) {
+        var range = Math.floor(4294967296 / max) * max;
+        var value;
+        do {
+          var random = new Uint32Array(1);
+          window.crypto.getRandomValues(random);
+          value = random[0];
+        } while (value >= range);
+        return value % max;
+      }
+
+      function generatePassword() {
+        if (!window.crypto || !window.crypto.getRandomValues) {
+          throw new Error('Secure password generation is unavailable in this browser.');
+        }
+        var groups = ['ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnopqrstuvwxyz', '23456789', '!@#$%*-_=+?'];
+        var alphabet = groups.join('');
+        var characters = groups.map(function (group) {
+          return group[secureRandomInt(group.length)];
+        });
+        while (characters.length < 20) {
+          characters.push(alphabet[secureRandomInt(alphabet.length)]);
+        }
+        for (var i = characters.length - 1; i > 0; i -= 1) {
+          var index = secureRandomInt(i + 1);
+          var character = characters[i];
+          characters[i] = characters[index];
+          characters[index] = character;
+        }
+        return characters.join('');
+      }
+
+      function updateForm(form) {
+        var password = form.querySelector('[data-password-value]');
+        var confirmation = form.querySelector('[data-password-confirm]');
+        var match = form.querySelector('[data-password-match]');
+        var meter = form.querySelector('[data-password-meter]');
+        var strength = form.querySelector('[data-password-strength]');
+        if (!password || !confirmation) return;
+
+        var value = password.value;
+        if (meter && strength) {
+          var variety = [
+            /[a-z]/.test(value),
+            /[A-Z]/.test(value),
+            /[0-9]/.test(value),
+            /[^A-Za-z0-9]/.test(value)
+          ].filter(Boolean).length;
+          var score = (value.length >= 12 ? 1 : 0)
+            + (value.length >= 16 ? 1 : 0)
+            + (value.length >= 20 ? 1 : 0)
+            + (variety >= 3 ? 1 : 0)
+            + (variety === 4 ? 1 : 0);
+          var level = score >= 4 ? 'strong' : score >= 2 ? 'fair' : 'weak';
+          meter.value = score;
+          meter.setAttribute('data-strength', value ? level : '');
+          strength.textContent = !value
+            ? 'Use at least 12 characters.'
+            : value.length < 12
+              ? 'Too short — use at least 12 characters.'
+              : level.charAt(0).toUpperCase() + level.slice(1) + ' password';
+        }
+
+        confirmation.setCustomValidity('');
+        if (!confirmation.value) {
+          confirmation.removeAttribute('aria-invalid');
+          if (match) {
+            match.textContent = '';
+            match.removeAttribute('data-match');
+          }
+          return;
+        }
+        var matches = value === confirmation.value;
+        confirmation.setCustomValidity(matches ? '' : 'Administrator passwords do not match.');
+        confirmation.setAttribute('aria-invalid', String(!matches));
+        if (match) {
+          match.textContent = matches ? 'Passwords match.' : 'Passwords do not match yet.';
+          match.setAttribute('data-match', matches ? 'yes' : 'no');
+        }
+      }
+
+      document.querySelectorAll('form[data-password-form]').forEach(function (form) {
+        var password = form.querySelector('[data-password-value]');
+        var confirmation = form.querySelector('[data-password-confirm]');
+        if (!password || !confirmation) return;
+
+        form.querySelectorAll('[data-password-toggle]').forEach(function (toggle) {
+          toggle.addEventListener('click', function () {
+            var input = document.getElementById(toggle.getAttribute('aria-controls'));
+            if (!input) return;
+            var visible = input.type === 'password';
+            input.type = visible ? 'text' : 'password';
+            toggle.textContent = visible ? 'Hide' : 'Show';
+            toggle.setAttribute('aria-label', (visible ? 'Hide' : 'Show') + ' ' + (input === password ? 'password' : 'confirmation password'));
+            toggle.setAttribute('aria-pressed', String(visible));
+          });
+        });
+
+        password.addEventListener('input', function () { updateForm(form); });
+        confirmation.addEventListener('input', function () { updateForm(form); });
+        form.querySelectorAll('[data-password-generate]').forEach(function (button) {
+          button.addEventListener('click', function () {
+            try {
+              var generated = generatePassword();
+              password.value = generated;
+              confirmation.value = generated;
+              password.dispatchEvent(new Event('input', { bubbles: true }));
+              confirmation.dispatchEvent(new Event('input', { bubbles: true }));
+              password.type = 'text';
+              confirmation.type = 'text';
+              form.querySelectorAll('[data-password-toggle]').forEach(function (toggle) {
+                toggle.textContent = 'Hide';
+                toggle.setAttribute('aria-pressed', 'true');
+                toggle.setAttribute('aria-label', 'Hide ' + (toggle.getAttribute('aria-controls') === password.id ? 'password' : 'confirmation password'));
+              });
+              password.focus();
+            } catch (error) {
+              var feedback = form.querySelector('[data-password-strength]');
+              if (feedback) feedback.textContent = error.message;
+            }
+          });
+        });
+        form.addEventListener('submit', function (event) {
+          updateForm(form);
+          if (password.value.length < 12 || password.value.length > 128 || password.value !== confirmation.value) {
+            event.preventDefault();
+            if (password.value.length < 12 || password.value.length > 128) password.reportValidity();
+            else confirmation.reportValidity();
+          }
+        });
       });
     })();
   </script>
@@ -248,22 +426,15 @@ export function registerWebRoutes(
       </div>
       <div class="card">
         <h2>Provision a workspace</h2>
-        <form class="row" method="post" action="/dashboard/instances">
+        <form class="row" method="post" action="/dashboard/instances" data-password-form>
           <div>
             <label for="name">Company / site name</label>
             <input id="name" type="text" name="name" placeholder="Acme Manufacturing" required maxlength="100">
           </div>
-          <div>
-            <label for="adminPassword">ERPNext Administrator password</label>
-            <input id="adminPassword" type="password" name="adminPassword" autocomplete="new-password" minlength="12" maxlength="128" required>
-          </div>
-          <div>
-            <label for="confirmAdminPassword">Confirm Administrator password</label>
-            <input id="confirmAdminPassword" type="password" name="confirmAdminPassword" autocomplete="new-password" minlength="12" maxlength="128" required>
-          </div>
+          ${passwordFields('adminPassword', 'confirmAdminPassword', 'ERPNext Administrator password', 'Confirm Administrator password')}
           <button type="submit">Create instance</button>
         </form>
-        <p class="muted">A dedicated ERPNext site and database will be provisioned. Your login is <strong>Administrator</strong>; the password is encrypted for recovery and can be changed later.</p>
+        <p class="muted">Use at least 12 characters; longer passphrases are stronger. Your login is <strong>Administrator</strong>; the password is encrypted for recovery and can be changed later.</p>
       </div>
       <div class="card">
         <h2>Your instances</h2>
@@ -283,7 +454,13 @@ export function registerWebRoutes(
 
   app.post('/dashboard/instances', { preHandler: requireAuth }, async (request, reply) => {
     const { user } = getAuth(request);
-    const body = createFormBody.parse(request.body ?? {});
+    const parsed = createFormBody.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      const message = parsed.error.issues[0]?.message ?? 'Please check the form fields';
+      await reply.redirect(`/dashboard?error=${encodeURIComponent(message)}`, 303);
+      return;
+    }
+    const body = parsed.data;
     try {
       const instance = await instanceService.create(user, {
         companyName: body.name ?? '',
@@ -387,15 +564,8 @@ export function registerWebRoutes(
             ? `<p class="err-text">Password change failed: ${escapeHtml(latestJob?.lastError ?? 'unknown error')}. The saved current password is unchanged; submit a new password to retry.</p>`
             : ''
         }
-        <form class="row" method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/credentials">
-          <div>
-            <label for="newAdminPassword">New Administrator password</label>
-            <input id="newAdminPassword" type="password" name="adminPassword" autocomplete="new-password" minlength="12" maxlength="128" required ${credentialChangePending ? 'disabled' : ''}>
-          </div>
-          <div>
-            <label for="confirmNewAdminPassword">Confirm new password</label>
-            <input id="confirmNewAdminPassword" type="password" name="confirmAdminPassword" autocomplete="new-password" minlength="12" maxlength="128" required ${credentialChangePending ? 'disabled' : ''}>
-          </div>
+        <form class="row" method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/credentials" data-password-form>
+          ${passwordFields('newAdminPassword', 'confirmNewAdminPassword', 'New Administrator password', 'Confirm new password', credentialChangePending)}
           <button class="action" type="submit" ${credentialChangePending ? 'disabled' : ''}>${hasLoginCredentials ? 'Change password' : 'Set password'}</button>
         </form>
         <p class="muted">Passwords are encrypted in platform storage. A password change is applied by the worker and remains pending until successful. If you change the password directly in ERPNext, its one-way hash cannot be recovered here; update it through this panel to keep recovery in sync.</p>
@@ -529,7 +699,13 @@ export function registerWebRoutes(
   app.post('/dashboard/instances/:id/credentials', { preHandler: requireAuth }, async (request, reply) => {
     const { user } = getAuth(request);
     const { id } = request.params as { id: string };
-    const body = credentialsFormBody.parse(request.body ?? {});
+    const parsed = credentialsFormBody.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      const message = parsed.error.issues[0]?.message ?? 'Please check the password fields';
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}?error=${encodeURIComponent(message)}`, 303);
+      return;
+    }
+    const body = parsed.data;
     try {
       await instanceService.changeLoginPassword(user, id, body.adminPassword);
       await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}`, 303);

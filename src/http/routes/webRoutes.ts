@@ -231,6 +231,9 @@ function layout(title: string, body: string, user?: User | null): string {
     form.row { display: flex; align-items: end; flex-wrap: wrap; gap: .85rem; }
     form.row > div { flex: 1 1 180px; }
     form.row > button { flex: 0 0 auto; }
+    form.provisioning-form { display: grid; grid-template-columns: minmax(0, 1fr); align-items: stretch; gap: 1rem; }
+    form.provisioning-form > div { min-width: 0; }
+    form.provisioning-form > button { width: 100%; }
     label { display: block; margin-bottom: .4rem; color: var(--muted); font-size: .78rem; font-weight: 560; }
     input[type=text], input[type=password], input[type=file], select {
       min-width: min(260px, 100%);
@@ -589,7 +592,7 @@ export function registerWebRoutes(
       </div>
       <div class="card">
         <h2>Provision a workspace</h2>
-        <form class="row" method="post" action="/dashboard/instances" data-password-form>
+        <form class="row provisioning-form" method="post" action="/dashboard/instances" data-password-form>
           <div>
             <label for="name">Company / site name</label>
             <input id="name" type="text" name="name" placeholder="Acme Manufacturing" required maxlength="100">

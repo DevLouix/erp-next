@@ -37,6 +37,11 @@ describe('dashboard presentation', () => {
     expect(dashboard.body).toContain("localStorage.setItem('erpnext-hosting-theme'");
     expect(dashboard.body).toContain('name="adminPassword"');
     expect(dashboard.body).toContain('name="confirmAdminPassword"');
+    expect(dashboard.body).toContain('data-password-generate');
+    expect(dashboard.body).toContain('data-password-meter');
+    expect(dashboard.body).toContain('aria-controls="adminPassword"');
+    expect(dashboard.body).toContain('Passwords do not match yet.');
+    expect(dashboard.body).toContain('reportValidity()');
 
     const detail = await ctx.app.inject({
       method: 'GET',
@@ -47,6 +52,24 @@ describe('dashboard presentation', () => {
     expect(detail.body).toContain('Retry provisioning');
     expect(detail.body).toMatch(/Retry provisioning<\/button>/);
     expect(detail.body).toContain('disabled>Retry provisioning</button>');
+  });
+
+  it('returns a helpful dashboard message for mismatched creation passwords', async () => {
+    ctx = await makeTestApp();
+    const { cookie } = await loginAs(ctx, { sub: 'owner', email: 'owner@example.test' });
+    const response = await ctx.app.inject({
+      method: 'POST',
+      url: '/dashboard/instances',
+      headers: { cookie },
+      payload: {
+        name: 'Acme Manufacturing',
+        adminPassword: 'secure-test-password',
+        confirmAdminPassword: 'different-test-password',
+      },
+    });
+    expect(response.statusCode).toBe(303);
+    expect(response.headers.location).toContain(encodeURIComponent('Administrator passwords do not match'));
+    expect(response.headers.location).not.toContain('secure-test-password');
   });
 
   it('shows recovery and password management for a ready instance without rendering the secret', async () => {
@@ -84,6 +107,33 @@ describe('dashboard presentation', () => {
     });
     expect(changed.statusCode).toBe(303);
     expect((await ctx.store.findLatestJobForInstance(instance.id))?.type).toBe('credentials');
+  });
+
+  it('shows a helpful inline-page error when changed passwords do not match', async () => {
+    ctx = await makeTestApp();
+    const { cookie } = await loginAs(ctx, { sub: 'owner', email: 'owner@example.test' });
+    const created = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/instances',
+      headers: { cookie },
+      payload: createPayload('Acme Manufacturing'),
+    });
+    const instance = created.json().instance;
+    await ctx.store.updateInstance(instance.id, { status: 'ready' });
+    await ctx.store.completeJob((await ctx.store.findLatestJobForInstance(instance.id))!.id);
+
+    const changed = await ctx.app.inject({
+      method: 'POST',
+      url: `/dashboard/instances/${encodeURIComponent(instance.id)}/credentials`,
+      headers: { cookie },
+      payload: {
+        adminPassword: 'another-secure-password',
+        confirmAdminPassword: 'different-secure-password',
+      },
+    });
+    expect(changed.statusCode).toBe(303);
+    expect(changed.headers.location).toContain(encodeURIComponent('Administrator passwords do not match'));
+    expect((await ctx.store.findLatestJobForInstance(instance.id))?.type).toBe('provision');
   });
 
   it('enables Retry after the provisioning job fails', async () => {

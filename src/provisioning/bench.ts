@@ -21,8 +21,8 @@ export interface BenchConfig {
  * Thin wrapper around the supported `bench` CLI.
  *
  * Every method maps to a documented Frappe Bench command. No method accepts a
- * caller-provided flag or free-form argument: the only variable inputs are the
- * already-validated site name and hostname.
+ * caller-provided flag or free-form argument; site names, hostnames, and
+ * passwords are passed only through dedicated array-form arguments.
  */
 export class BenchClient {
   constructor(
@@ -34,14 +34,14 @@ export class BenchClient {
     return [this.config.mariadbRootPassword, this.config.erpnextAdminPassword];
   }
 
-  private async bench(args: string[]): Promise<CommandResult> {
+  private async bench(args: string[], extraSecrets: string[] = []): Promise<CommandResult> {
     const result = await this.runner.run(this.config.benchBin, args, {
       cwd: this.config.benchPath,
     });
     return {
       ...result,
-      stdout: redact(result.stdout, this.secrets),
-      stderr: redact(result.stderr, this.secrets),
+      stdout: redact(result.stdout, [...this.secrets, ...extraSecrets]),
+      stderr: redact(result.stderr, [...this.secrets, ...extraSecrets]),
     };
   }
 
@@ -56,20 +56,29 @@ export class BenchClient {
   }
 
   /** `bench new-site` — creates the site directory and its MariaDB database. */
-  async newSite(siteName: string): Promise<CommandResult> {
+  async newSite(siteName: string, adminPassword = this.config.erpnextAdminPassword): Promise<CommandResult> {
     const args = [
       'new-site',
       siteName,
       '--admin-password',
-      this.config.erpnextAdminPassword,
+      adminPassword,
       '--mariadb-root-password',
       this.config.mariadbRootPassword,
       '--no-mariadb-socket',
     ];
     if (this.config.mariadbHost) args.push('--db-host', this.config.mariadbHost);
-    const result = await this.bench(args);
+    const result = await this.bench(args, [adminPassword]);
     this.assertOk(result, `Creating site ${siteName}`);
     return result;
+  }
+
+  /** `bench --site <site> set-admin-password <password>` */
+  async setAdminPassword(siteName: string, password: string): Promise<void> {
+    const result = await this.bench(
+      ['--site', siteName, 'set-admin-password', password],
+      [password],
+    );
+    this.assertOk(result, `Changing Administrator password for ${siteName}`);
   }
 
   /** `bench --site <site> list-apps` — returns installed app names. */

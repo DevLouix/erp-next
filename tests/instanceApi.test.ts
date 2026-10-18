@@ -2,6 +2,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { makeTestApp, loginAs, type TestApp } from './helpers/app.js';
 
 let ctx: TestApp;
+const createPayload = (name: string) => ({
+  name,
+  adminPassword: 'secure-test-password',
+  confirmAdminPassword: 'secure-test-password',
+});
 
 afterEach(async () => {
   await ctx?.app.close();
@@ -15,8 +20,9 @@ describe('POST /api/instances', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie },
-      payload: { name: 'Acme Manufacturing' },
+      payload: createPayload('Acme Manufacturing'),
     });
+
     expect(res.statusCode).toBe(201);
     const { instance } = res.json();
     expect(instance.status).toBe('queued');
@@ -28,6 +34,74 @@ describe('POST /api/instances', () => {
     expect(instance.ownerUserId).toBe(userId);
   });
 
+  it('requires a confirmed Administrator password and never returns it in instance metadata', async () => {
+    ctx = await makeTestApp();
+    const { cookie } = await loginAs(ctx, { sub: 'u1', email: 'u1@example.test' });
+    const missing = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/instances',
+      headers: { cookie },
+      payload: { name: 'Acme Manufacturing' },
+    });
+    expect(missing.statusCode).toBe(400);
+
+    const created = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/instances',
+      headers: { cookie },
+      payload: createPayload('Acme Manufacturing'),
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.body).not.toContain('secure-test-password');
+  });
+
+  it('recovers and changes ready-instance credentials only for an authorized owner', async () => {
+    ctx = await makeTestApp();
+    const owner = await loginAs(ctx, { sub: 'owner', email: 'owner@example.test' });
+    const other = await loginAs(ctx, { sub: 'other', email: 'other@example.test' });
+    const created = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/instances',
+      headers: { cookie: owner.cookie },
+      payload: createPayload('Acme Manufacturing'),
+    });
+    const instance = created.json().instance;
+    await ctx.store.updateInstance(instance.id, { status: 'ready' });
+    const provisioningJob = await ctx.store.findLatestJobForInstance(instance.id);
+    await ctx.store.completeJob(provisioningJob!.id);
+
+    const denied = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/instances/${instance.id}/credentials`,
+      headers: { cookie: other.cookie },
+    });
+    expect(denied.statusCode).toBe(404);
+
+    const recovered = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/instances/${instance.id}/credentials`,
+      headers: { cookie: owner.cookie },
+    });
+    expect(recovered.statusCode).toBe(200);
+    expect(recovered.headers['cache-control']).toContain('no-store');
+    expect(recovered.json().credentials).toEqual({
+      username: 'Administrator',
+      password: 'secure-test-password',
+    });
+
+    const changed = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/instances/${instance.id}/credentials`,
+      headers: { cookie: owner.cookie },
+      payload: {
+        adminPassword: 'another-secure-password',
+        confirmAdminPassword: 'another-secure-password',
+      },
+    });
+    expect(changed.statusCode).toBe(202);
+    expect((await ctx.store.findLatestJobForInstance(instance.id))?.type).toBe('credentials');
+  });
+
   it('rejects an invalid site name with 400', async () => {
     ctx = await makeTestApp();
     const { cookie } = await loginAs(ctx, { sub: 'u1', email: 'u1@example.test' });
@@ -35,7 +109,7 @@ describe('POST /api/instances', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie },
-      payload: { name: 'ab' },
+      payload: createPayload('ab'),
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toBe('validation_error');
@@ -61,13 +135,13 @@ describe('POST /api/instances', () => {
       method: 'POST',
       url: '/api/instances',
       headers,
-      payload: { name: 'Acme Manufacturing' },
+      payload: createPayload('Acme Manufacturing'),
     });
     const second = await ctx.app.inject({
       method: 'POST',
       url: '/api/instances',
       headers,
-      payload: { name: 'Acme Manufacturing' },
+      payload: createPayload('Acme Manufacturing'),
     });
     expect(first.json().instance.id).toBe(second.json().instance.id);
     expect(await ctx.store.listAllInstances()).toHaveLength(1);
@@ -81,13 +155,13 @@ describe('POST /api/instances', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie: a.cookie },
-      payload: { name: 'Globex' },
+      payload: createPayload('Globex'),
     });
     const second = await ctx.app.inject({
       method: 'POST',
       url: '/api/instances',
       headers: { cookie: b.cookie },
-      payload: { name: 'Globex' },
+      payload: createPayload('Globex'),
     });
     expect(first.json().instance.hostname).not.toBe(second.json().instance.hostname);
   });
@@ -99,7 +173,7 @@ describe('POST /api/instances', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie },
-      payload: { name: 'Ready Co' },
+      payload: createPayload('Ready Co'),
     });
     const id = created.json().instance.id;
     await ctx.store.updateInstance(id, { status: 'ready' });
@@ -119,7 +193,7 @@ describe('POST /api/instances', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie },
-      payload: { name: 'Acme Manufacturing' },
+      payload: createPayload('Acme Manufacturing'),
     });
     const instance = created.json().instance;
     const updated = await ctx.app.inject({
@@ -140,7 +214,7 @@ describe('POST /api/instances', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie },
-      payload: { name: 'Acme Manufacturing' },
+      payload: createPayload('Acme Manufacturing'),
     });
     const instance = created.json().instance;
     const job = await ctx.store.findLatestJobForInstance(instance.id);
@@ -173,7 +247,7 @@ describe('POST /api/instances', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie: owner.cookie },
-      payload: { name: 'Acme Manufacturing' },
+      payload: createPayload('Acme Manufacturing'),
     });
     const id = created.json().instance.id;
     const job = await ctx.store.findLatestJobForInstance(id);
@@ -197,7 +271,7 @@ describe('POST /api/instances', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie },
-      payload: { name: 'Acme Manufacturing' },
+      payload: createPayload('Acme Manufacturing'),
     });
     const instance = created.json().instance;
     await ctx.store.updateInstance(instance.id, { status: 'ready' });
@@ -231,7 +305,7 @@ describe('POST /api/instances', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie },
-      payload: { name: 'Acme Manufacturing' },
+      payload: createPayload('Acme Manufacturing'),
     });
     const instance = created.json().instance;
     await ctx.store.updateInstance(instance.id, { status: 'ready' });

@@ -34,6 +34,7 @@ const snapshotInstanceSchema = z.object({
   hostname: z.string().min(1),
   status: z.enum(INSTANCE_STATUSES),
   errorMessage: z.string().nullable().optional().transform((v) => v ?? null),
+  adminPasswordCiphertext: z.string().nullable().optional(),
   createdAt: isoDate,
   updatedAt: isoDate,
 }).transform((instance) => ({
@@ -96,17 +97,25 @@ export class BackupService {
       disabled: u.disabled,
       createdAt: u.createdAt.toISOString(),
     }));
-    const snapshotInstances: SnapshotInstance[] = instances.map((i) => ({
-      id: i.id,
-      ownerUserId: i.ownerUserId,
-      companyName: i.companyName,
-      siteName: i.siteName,
-      hostname: i.hostname,
-      status: i.status,
-      errorMessage: i.errorMessage,
-      createdAt: i.createdAt.toISOString(),
-      updatedAt: i.updatedAt.toISOString(),
-    }));
+    const snapshotInstances: SnapshotInstance[] = await Promise.all(
+      instances.map(async (i) => {
+        const credentials = await this.store.findInstanceCredentials(i.id);
+        return {
+          id: i.id,
+          ownerUserId: i.ownerUserId,
+          companyName: i.companyName,
+          siteName: i.siteName,
+          hostname: i.hostname,
+          status: i.status,
+          errorMessage: i.errorMessage,
+          ...(credentials?.adminPasswordCiphertext
+            ? { adminPasswordCiphertext: credentials.adminPasswordCiphertext }
+            : {}),
+          createdAt: i.createdAt.toISOString(),
+          updatedAt: i.updatedAt.toISOString(),
+        };
+      }),
+    );
     const snapshotJobs: SnapshotJob[] = jobs.map((j) => ({
       id: j.id,
       instanceId: j.instanceId,
@@ -270,6 +279,7 @@ export class BackupService {
             hostname: naming.hostname,
             status: importedStatus,
             errorMessage: importedErrorMessage,
+            adminPasswordCiphertext: snapshotInstance.adminPasswordCiphertext,
           });
         }
       } else {
@@ -282,6 +292,7 @@ export class BackupService {
             hostname: naming.hostname,
             status: importedStatus,
             errorMessage: importedErrorMessage,
+            adminPasswordCiphertext: snapshotInstance.adminPasswordCiphertext,
           });
         }
       }

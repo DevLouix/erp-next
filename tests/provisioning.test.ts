@@ -26,7 +26,11 @@ beforeEach(async () => {
 });
 
 async function seed(name = 'Acme Corp'): Promise<Instance> {
-  return service.create(owner, { companyName: name, idempotencyKey: null });
+  return service.create(owner, {
+    companyName: name,
+    adminPassword: 'secure-test-password',
+    idempotencyKey: null,
+  });
 }
 
 function makeWorker(
@@ -103,6 +107,65 @@ describe('ProvisioningWorker happy path', () => {
     const outcome = await worker.processJob(claimed!);
     expect(outcome).toBe('ready');
     expect(bench.calls).toHaveLength(0);
+  });
+});
+
+describe('ProvisioningWorker login credential changes', () => {
+  it('applies and promotes a queued Administrator password update', async () => {
+    const instance = await seed();
+    await store.updateInstance(instance.id, { status: 'ready' });
+    const initialJob = await store.findLatestJobForInstance(instance.id);
+    await store.completeJob(initialJob!.id);
+
+    await service.changeLoginPassword(owner, instance.id, 'new-secure-password');
+    const job = await store.claimNextJob(new Date());
+    expect(job?.type).toBe('credentials');
+    const bench = new FakeBench();
+    const result = await makeWorker(bench).processJob(job!);
+
+    expect(result).toBe('ready');
+    expect(bench.calls).toContainEqual({
+      op: 'set-admin-password',
+      args: [instance.siteName, 'new-secure-password'],
+    });
+    await expect(service.loginCredentialsFor(owner, instance.id)).resolves.toEqual({
+      username: 'Administrator',
+      password: 'new-secure-password',
+    });
+    expect((await store.findLatestJobForInstance(instance.id))?.status).toBe('succeeded');
+  });
+
+  it('provisions the site using the owner-supplied password', async () => {
+    const instance = await seed();
+    const job = await store.claimNextJob(new Date());
+    const bench = new FakeBench();
+    await makeWorker(bench).processJob(job!);
+    expect(bench.calls[0]?.args).toEqual([instance.siteName, 'secure-test-password']);
+  });
+
+  it('clears the pending password when a stale credential-change job exhausts retries', async () => {
+    const limitedService = new InstanceService(store, {
+      ...config,
+      PROVISION_MAX_ATTEMPTS: 1,
+    });
+    const instance = await limitedService.create(owner, {
+      companyName: 'Acme Corp',
+      adminPassword: 'secure-test-password',
+      idempotencyKey: null,
+    });
+    await store.updateInstance(instance.id, { status: 'ready' });
+    await store.completeJob((await store.findLatestJobForInstance(instance.id))!.id);
+    await limitedService.changeLoginPassword(owner, instance.id, 'new-secure-password');
+    await store.claimNextJob(new Date());
+
+    expect(await store.recoverStaleJobs(new Date(Date.now() + 10_000), 1_000)).toBe(1);
+
+    const credentials = await store.findInstanceCredentials(instance.id);
+    expect(credentials?.pendingAdminPasswordCiphertext).toBeNull();
+    await expect(limitedService.loginCredentialsFor(owner, instance.id)).resolves.toEqual({
+      username: 'Administrator',
+      password: 'secure-test-password',
+    });
   });
 });
 

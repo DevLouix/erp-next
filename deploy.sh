@@ -24,7 +24,7 @@ ALLOW_INSECURE=0
 FOLLOW_LOGS=0
 ACTION="up"
 
-GEN_KEYS=(SESSION_COOKIE_SECRET PLATFORM_DB_PASSWORD MARIADB_ROOT_PASSWORD ERPNEXT_ADMIN_PASSWORD)
+GEN_KEYS=(SESSION_COOKIE_SECRET PLATFORM_DB_PASSWORD MARIADB_ROOT_PASSWORD ERPNEXT_ADMIN_PASSWORD BACKUP_CREDENTIALS_ENCRYPTION_KEY)
 INPUT_KEYS=(PUBLIC_BASE_URL TRUEMOI_CLIENT_ID TRUEMOI_AUTH_DOMAIN PROVISIONING_BASE_DOMAIN)
 
 PROBLEM_GEN=()
@@ -130,12 +130,20 @@ validate() {
   PROBLEM_GEN=()
   PROBLEM_INPUT=()
   WARNINGS=()
-  local key v min
+  local key v min decoded_bytes canonical_key
 
   for key in "${GEN_KEYS[@]}"; do
     v="$(get_env "$key")"
     min=12
     if [[ "$key" == "SESSION_COOKIE_SECRET" ]]; then min=32; fi
+    if [[ "$key" == "BACKUP_CREDENTIALS_ENCRYPTION_KEY" ]]; then
+      decoded_bytes="$(printf '%s' "$v" | base64 -d 2>/dev/null | wc -c | tr -d ' ' || true)"
+      canonical_key="$(printf '%s' "$v" | base64 -d 2>/dev/null | base64 2>/dev/null | tr -d '\n' || true)"
+      if [[ $FORCE -eq 1 ]] || is_placeholder "$v" || [[ "$decoded_bytes" != "32" ]] || [[ "$canonical_key" != "$v" ]]; then
+        PROBLEM_GEN+=("$key")
+      fi
+      continue
+    fi
     if [[ $FORCE -eq 1 ]] || is_placeholder "$v" || (( ${#v} < min )); then
       PROBLEM_GEN+=("$key")
     fi
@@ -175,7 +183,15 @@ describe_input() {
 auto_generate() {
   local key
   for key in "${PROBLEM_GEN[@]}"; do
-    if [[ "$key" == "SESSION_COOKIE_SECRET" ]]; then
+    if [[ "$key" == "BACKUP_CREDENTIALS_ENCRYPTION_KEY" ]]; then
+      local encryption_key
+      if command -v openssl >/dev/null 2>&1; then
+        encryption_key="$(openssl rand -base64 32 | tr -d '\n')"
+      else
+        encryption_key="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
+      fi
+      set_env "$key" "$encryption_key"
+    elif [[ "$key" == "SESSION_COOKIE_SECRET" ]]; then
       set_env "$key" "$(gen_secret 48)"
     else
       set_env "$key" "$(gen_secret 24)"

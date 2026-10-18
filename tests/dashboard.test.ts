@@ -2,6 +2,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { makeTestApp, loginAs, type TestApp } from './helpers/app.js';
 
 let ctx: TestApp;
+const createPayload = (name: string) => ({
+  name,
+  adminPassword: 'secure-test-password',
+  confirmAdminPassword: 'secure-test-password',
+});
 
 afterEach(async () => {
   await ctx?.app.close();
@@ -15,7 +20,7 @@ describe('dashboard presentation', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie },
-      payload: { name: 'Acme Manufacturing' },
+      payload: createPayload('Acme Manufacturing'),
     });
     const instance = created.json().instance;
 
@@ -30,15 +35,55 @@ describe('dashboard presentation', () => {
     expect(dashboard.body).toContain('class="manage-link"');
     expect(dashboard.body).toContain('data-theme-toggle');
     expect(dashboard.body).toContain("localStorage.setItem('erpnext-hosting-theme'");
+    expect(dashboard.body).toContain('name="adminPassword"');
+    expect(dashboard.body).toContain('name="confirmAdminPassword"');
 
     const detail = await ctx.app.inject({
       method: 'GET',
       url: `/dashboard/instances/${encodeURIComponent(instance.id)}`,
       headers: { cookie },
     });
+
     expect(detail.body).toContain('Retry provisioning');
     expect(detail.body).toMatch(/Retry provisioning<\/button>/);
     expect(detail.body).toContain('disabled>Retry provisioning</button>');
+  });
+
+  it('shows recovery and password management for a ready instance without rendering the secret', async () => {
+    ctx = await makeTestApp();
+    const { cookie } = await loginAs(ctx, { sub: 'owner', email: 'owner@example.test' });
+    const created = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/instances',
+      headers: { cookie },
+      payload: createPayload('Acme Manufacturing'),
+    });
+    const instance = created.json().instance;
+    await ctx.store.updateInstance(instance.id, { status: 'ready' });
+    await ctx.store.completeJob((await ctx.store.findLatestJobForInstance(instance.id))!.id);
+
+    const detail = await ctx.app.inject({
+      method: 'GET',
+      url: `/dashboard/instances/${encodeURIComponent(instance.id)}`,
+      headers: { cookie },
+    });
+    expect(detail.body).toContain('ERPNext login');
+    expect(detail.body).toContain('Administrator');
+    expect(detail.body).toContain('Show saved password');
+    expect(detail.body).toContain('Change password');
+    expect(detail.body).not.toContain('secure-test-password');
+
+    const changed = await ctx.app.inject({
+      method: 'POST',
+      url: `/dashboard/instances/${encodeURIComponent(instance.id)}/credentials`,
+      headers: { cookie },
+      payload: {
+        adminPassword: 'another-secure-password',
+        confirmAdminPassword: 'another-secure-password',
+      },
+    });
+    expect(changed.statusCode).toBe(303);
+    expect((await ctx.store.findLatestJobForInstance(instance.id))?.type).toBe('credentials');
   });
 
   it('enables Retry after the provisioning job fails', async () => {
@@ -48,7 +93,7 @@ describe('dashboard presentation', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie },
-      payload: { name: 'Acme Manufacturing' },
+      payload: createPayload('Acme Manufacturing'),
     });
     const instance = created.json().instance;
     const job = await ctx.store.findLatestJobForInstance(instance.id);
@@ -80,7 +125,7 @@ describe('dashboard presentation', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie },
-      payload: { name: 'Acme Manufacturing' },
+      payload: createPayload('Acme Manufacturing'),
     });
     const instance = created.json().instance;
     const adminPage = () => ctx.app.inject({
@@ -113,7 +158,7 @@ describe('dashboard presentation', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie },
-      payload: { name: 'Acme Manufacturing' },
+      payload: createPayload('Acme Manufacturing'),
     });
     const instance = created.json().instance;
     const detail = await ctx.app.inject({

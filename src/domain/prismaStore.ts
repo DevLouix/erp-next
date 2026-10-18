@@ -1,10 +1,11 @@
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 import type { Store } from './store.js';
-import { DuplicateError } from './errors.js';
+import { DuplicateError, ValidationError } from './errors.js';
 import type {
   AuditLogEntry,
   EncryptedSiteBackupCredentials,
+  EncryptedInstanceCredentials,
   BackupSnapshot,
   BackupSnapshotMeta,
   CreateInstanceInput,
@@ -46,10 +47,23 @@ function toInstance(row: {
   status: string;
   errorMessage: string | null;
   idempotencyKey: string | null;
+  adminPasswordCiphertext?: string | null;
+  pendingAdminPasswordCiphertext?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }): Instance {
-  return { ...row, status: row.status as InstanceStatus };
+  return {
+    id: row.id,
+    ownerUserId: row.ownerUserId,
+    companyName: row.companyName,
+    siteName: row.siteName,
+    hostname: row.hostname,
+    status: row.status as InstanceStatus,
+    errorMessage: row.errorMessage,
+    idempotencyKey: row.idempotencyKey,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
 }
 
 function toJob(row: {
@@ -214,6 +228,7 @@ export class PrismaStore implements Store {
           siteName: input.siteName,
           hostname: input.hostname,
           idempotencyKey: input.idempotencyKey,
+          adminPasswordCiphertext: input.adminPasswordCiphertext,
         },
       });
       return toInstance(row);
@@ -254,6 +269,63 @@ export class PrismaStore implements Store {
   async findInstanceByHostname(hostname: string): Promise<Instance | null> {
     const row = await this.prisma.instance.findUnique({ where: { hostname } });
     return row ? toInstance(row) : null;
+  }
+
+  async findInstanceCredentials(instanceId: string): Promise<EncryptedInstanceCredentials | null> {
+    const row = await this.prisma.instance.findUnique({
+      where: { id: instanceId },
+      select: {
+        adminPasswordCiphertext: true,
+        pendingAdminPasswordCiphertext: true,
+      },
+    });
+    return row ?? null;
+  }
+
+  async queueInstanceCredentialChange(
+    instanceId: string,
+    passwordCiphertext: string,
+    maxAttempts: number,
+  ): Promise<ProvisioningJob> {
+    return this.prisma.$transaction(async (tx) => {
+      const instance = await tx.instance.findUnique({ where: { id: instanceId } });
+      if (!instance || instance.status !== 'ready') {
+        throw new ValidationError('Only ready instances can change login credentials');
+      }
+      const active = await tx.provisioningJob.findFirst({
+        where: { instanceId, status: { in: ['queued', 'running'] } },
+      });
+      if (active) throw new DuplicateError('active_job_for_instance', instanceId);
+
+      const latest = await tx.provisioningJob.findFirst({
+        where: { instanceId },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
+      const now = new Date();
+      const job = latest
+        ? await tx.provisioningJob.update({
+            where: { id: latest.id },
+            data: {
+              type: 'credentials',
+              status: 'queued',
+              attempts: 0,
+              maxAttempts,
+              nextRunAt: now,
+              lockedAt: null,
+              cleanupBeforeRun: false,
+              lastError: null,
+              siteBackupId: null,
+            },
+          })
+        : await tx.provisioningJob.create({
+            data: { instanceId, type: 'credentials', maxAttempts },
+          });
+      await tx.instance.update({
+        where: { id: instanceId },
+        data: { pendingAdminPasswordCiphertext: passwordCiphertext },
+      });
+      return toJob(job);
+    });
   }
 
   async listInstancesByOwner(ownerUserId: string): Promise<Instance[]> {
@@ -577,6 +649,7 @@ export class PrismaStore implements Store {
         hostname: input.hostname,
         status: input.status,
         errorMessage: input.errorMessage,
+        adminPasswordCiphertext: input.adminPasswordCiphertext ?? null,
       },
       update: {
         ownerUserId: input.ownerUserId,
@@ -584,6 +657,12 @@ export class PrismaStore implements Store {
         hostname: input.hostname,
         status: input.status,
         errorMessage: input.errorMessage,
+        ...(input.adminPasswordCiphertext === undefined
+          ? {}
+          : {
+              adminPasswordCiphertext: input.adminPasswordCiphertext,
+              pendingAdminPasswordCiphertext: null,
+            }),
       },
     });
     return toInstance(row);
@@ -662,6 +741,11 @@ export class PrismaStore implements Store {
               errorMessage: message,
             },
           });
+        } else if (job.type === 'credentials' && exhausted) {
+          await tx.instance.updateMany({
+            where: { id: job.instanceId },
+            data: { pendingAdminPasswordCiphertext: null },
+          });
         }
         return true;
       });
@@ -697,6 +781,78 @@ export class PrismaStore implements Store {
         where: { id: instanceId },
         data: { status: 'ready', errorMessage: null },
       });
+      return true;
+    });
+  }
+
+  async completeInstanceCredentialChange(
+    jobId: string,
+    instanceId: string,
+    claim: { attempts: number; lockedAt: Date },
+  ): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const completed = await tx.provisioningJob.updateMany({
+        where: {
+          id: jobId,
+          instanceId,
+          type: 'credentials',
+          status: 'running',
+          attempts: claim.attempts,
+          lockedAt: claim.lockedAt,
+        },
+        data: { status: 'succeeded', lockedAt: null, lastError: null },
+      });
+      if (completed.count === 0) return false;
+      const credentials = await tx.instance.findUnique({
+        where: { id: instanceId },
+        select: { pendingAdminPasswordCiphertext: true },
+      });
+      if (!credentials?.pendingAdminPasswordCiphertext) {
+        throw new Error('Pending instance credential was not found');
+      }
+      await tx.instance.update({
+        where: { id: instanceId },
+        data: {
+          adminPasswordCiphertext: credentials.pendingAdminPasswordCiphertext,
+          pendingAdminPasswordCiphertext: null,
+        },
+      });
+      return true;
+    });
+  }
+
+  async recordInstanceCredentialChangeFailure(
+    jobId: string,
+    instanceId: string,
+    claim: { attempts: number; lockedAt: Date },
+    exhausted: boolean,
+    nextRunAt: Date,
+    error: string,
+  ): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.provisioningJob.updateMany({
+        where: {
+          id: jobId,
+          instanceId,
+          type: 'credentials',
+          status: 'running',
+          attempts: claim.attempts,
+          lockedAt: claim.lockedAt,
+        },
+        data: {
+          status: exhausted ? 'failed' : 'queued',
+          lockedAt: null,
+          nextRunAt: exhausted ? undefined : nextRunAt,
+          lastError: error,
+        },
+      });
+      if (updated.count === 0) return false;
+      if (exhausted) {
+        await tx.instance.update({
+          where: { id: instanceId },
+          data: { pendingAdminPasswordCiphertext: null },
+        });
+      }
       return true;
     });
   }

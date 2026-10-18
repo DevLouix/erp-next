@@ -38,6 +38,8 @@ model Instance {
   status       String   @default("queued")
   errorMessage String?  @map("error_message")
   idempotencyKey String? @map("idempotency_key")
+  adminPasswordCiphertext String? @map("admin_password_ciphertext")
+  pendingAdminPasswordCiphertext String? @map("pending_admin_password_ciphertext")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -141,9 +143,8 @@ model AuditLog {
   @@map("audit_logs")
 }
 
-// A portable, self-contained snapshot of platform state (accounts, ownership,
-// instances and provisioning jobs — never sessions or tokens). Can be exported
-// to a file for off-site safety or imported into another deployment to restore.
+// A platform-state snapshot, including encrypted login credential ciphertext.
+// Restores need the same BACKUP_CREDENTIALS_ENCRYPTION_KEY as the source.
 model BackupSnapshot {
   id              String   @id @default(cuid())
   label           String?

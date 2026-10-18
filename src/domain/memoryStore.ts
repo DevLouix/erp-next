@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type {
   AuditLogEntry,
   EncryptedSiteBackupCredentials,
+  EncryptedInstanceCredentials,
   BackupSnapshot,
   BackupSnapshotMeta,
   CreateInstanceInput,
@@ -20,7 +21,7 @@ import type {
   UserRole,
 } from './types.js';
 import type { Store } from './store.js';
-import { DuplicateError } from './errors.js';
+import { DuplicateError, ValidationError } from './errors.js';
 
 interface UserPatch {
   email?: string;
@@ -42,6 +43,7 @@ interface InstancePatch {
 export class MemoryStore implements Store {
   private users = new Map<string, User>();
   private instances = new Map<string, Instance>();
+  private instanceCredentials = new Map<string, EncryptedInstanceCredentials>();
   private jobs = new Map<string, ProvisioningJob>();
   private siteBackups = new Map<string, SiteBackup>();
   private siteBackupSettings: SiteBackupSettings = {
@@ -138,6 +140,10 @@ export class MemoryStore implements Store {
       updatedAt: now,
     };
     this.instances.set(instance.id, instance);
+    this.instanceCredentials.set(instance.id, {
+      adminPasswordCiphertext: input.adminPasswordCiphertext,
+      pendingAdminPasswordCiphertext: null,
+    });
     return instance;
   }
 
@@ -163,6 +169,47 @@ export class MemoryStore implements Store {
   async findInstanceByHostname(hostname: string): Promise<Instance | null> {
     for (const i of this.instances.values()) if (i.hostname === hostname) return i;
     return null;
+  }
+
+  async findInstanceCredentials(instanceId: string): Promise<EncryptedInstanceCredentials | null> {
+    return this.instanceCredentials.get(instanceId) ?? null;
+  }
+
+  async queueInstanceCredentialChange(
+    instanceId: string,
+    passwordCiphertext: string,
+    maxAttempts: number,
+  ): Promise<ProvisioningJob> {
+    const instance = this.instances.get(instanceId);
+    if (!instance || instance.status !== 'ready') {
+      throw new ValidationError('Only ready instances can change login credentials');
+    }
+    const latest = await this.findLatestJobForInstance(instanceId);
+    if (latest && (latest.status === 'queued' || latest.status === 'running')) {
+      throw new DuplicateError('active_job_for_instance', instanceId);
+    }
+    const job = latest
+      ? await this.patchJob(latest.id, {
+          type: 'credentials',
+          status: 'queued',
+          attempts: 0,
+          maxAttempts,
+          nextRunAt: new Date(),
+          lockedAt: null,
+          cleanupBeforeRun: false,
+          lastError: null,
+          siteBackupId: null,
+        })
+      : await this.createJob({ instanceId, maxAttempts, type: 'credentials' });
+    const credentials = this.instanceCredentials.get(instanceId) ?? {
+      adminPasswordCiphertext: null,
+      pendingAdminPasswordCiphertext: null,
+    };
+    this.instanceCredentials.set(instanceId, {
+      ...credentials,
+      pendingAdminPasswordCiphertext: passwordCiphertext,
+    });
+    return job;
   }
 
   async listInstancesByOwner(ownerUserId: string): Promise<Instance[]> {
@@ -256,6 +303,7 @@ export class MemoryStore implements Store {
 
   async deleteInstance(id: string): Promise<void> {
     this.instances.delete(id);
+    this.instanceCredentials.delete(id);
     for (const [jobId, job] of this.jobs) {
       if (job.instanceId === id) this.jobs.delete(jobId);
     }
@@ -411,6 +459,17 @@ export class MemoryStore implements Store {
         updatedAt: new Date(),
       };
       this.instances.set(existing.id, updated);
+      if (input.adminPasswordCiphertext !== undefined) {
+        const credentials = this.instanceCredentials.get(existing.id) ?? {
+          adminPasswordCiphertext: null,
+          pendingAdminPasswordCiphertext: null,
+        };
+        this.instanceCredentials.set(existing.id, {
+          ...credentials,
+          adminPasswordCiphertext: input.adminPasswordCiphertext,
+          pendingAdminPasswordCiphertext: null,
+        });
+      }
       return updated;
     }
     const now = new Date();
@@ -427,6 +486,10 @@ export class MemoryStore implements Store {
       updatedAt: now,
     };
     this.instances.set(instance.id, instance);
+    this.instanceCredentials.set(instance.id, {
+      adminPasswordCiphertext: input.adminPasswordCiphertext ?? null,
+      pendingAdminPasswordCiphertext: null,
+    });
     return instance;
   }
 
@@ -500,6 +563,14 @@ export class MemoryStore implements Store {
               updatedAt: now,
             });
           }
+        } else if (job.type === 'credentials') {
+          const credentials = this.instanceCredentials.get(job.instanceId);
+          if (credentials) {
+            this.instanceCredentials.set(job.instanceId, {
+              ...credentials,
+              pendingAdminPasswordCiphertext: null,
+            });
+          }
         }
       } else {
         this.jobs.set(job.id, {
@@ -553,6 +624,65 @@ export class MemoryStore implements Store {
       errorMessage: null,
       updatedAt: new Date(),
     });
+    return true;
+  }
+
+  async completeInstanceCredentialChange(
+    jobId: string,
+    instanceId: string,
+    claim: { attempts: number; lockedAt: Date },
+  ): Promise<boolean> {
+    const job = this.jobs.get(jobId);
+    const credentials = this.instanceCredentials.get(instanceId);
+    if (
+      !job || job.type !== 'credentials' || job.status !== 'running' ||
+      job.attempts !== claim.attempts || job.lockedAt?.getTime() !== claim.lockedAt.getTime() ||
+      !credentials?.pendingAdminPasswordCiphertext
+    ) return false;
+    this.jobs.set(jobId, {
+      ...job,
+      status: 'succeeded',
+      lockedAt: null,
+      lastError: null,
+      updatedAt: new Date(),
+    });
+    this.instanceCredentials.set(instanceId, {
+      adminPasswordCiphertext: credentials.pendingAdminPasswordCiphertext,
+      pendingAdminPasswordCiphertext: null,
+    });
+    return true;
+  }
+
+  async recordInstanceCredentialChangeFailure(
+    jobId: string,
+    instanceId: string,
+    claim: { attempts: number; lockedAt: Date },
+    exhausted: boolean,
+    nextRunAt: Date,
+    error: string,
+  ): Promise<boolean> {
+    const job = this.jobs.get(jobId);
+    if (
+      !job || job.type !== 'credentials' || job.status !== 'running' ||
+      job.attempts !== claim.attempts || job.lockedAt?.getTime() !== claim.lockedAt.getTime()
+    ) return false;
+    this.jobs.set(jobId, {
+      ...job,
+      status: exhausted ? 'failed' : 'queued',
+      lockedAt: null,
+      nextRunAt: exhausted ? job.nextRunAt : nextRunAt,
+      lastError: error,
+      updatedAt: new Date(),
+    });
+    if (exhausted) {
+      const credentials = this.instanceCredentials.get(instanceId);
+      if (credentials) {
+        this.instanceCredentials.set(instanceId, {
+          ...credentials,
+          pendingAdminPasswordCiphertext: null,
+        });
+      }
+    }
     return true;
   }
 

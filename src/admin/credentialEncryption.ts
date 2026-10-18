@@ -5,7 +5,7 @@ const KEY_BYTES = 32;
 
 function parseKey(encodedKey: string | undefined): Buffer {
   if (!encodedKey) {
-    throw new Error('BACKUP_CREDENTIALS_ENCRYPTION_KEY is required for S3 credentials');
+    throw new Error('BACKUP_CREDENTIALS_ENCRYPTION_KEY is required for encrypted credentials');
   }
   const key = Buffer.from(encodedKey, 'base64');
   if (key.length !== KEY_BYTES || key.toString('base64') !== encodedKey) {
@@ -25,19 +25,19 @@ export function encryptCredential(value: string, encodedKey: string | undefined)
 export function decryptCredential(value: string, encodedKey: string | undefined): string {
   const [version, nonceValue, tagValue, ciphertextValue, extra] = value.split(':');
   if (version !== 'v1' || !nonceValue || !tagValue || ciphertextValue === undefined || extra) {
-    throw new Error('Stored S3 credential ciphertext has an unsupported format');
+    throw new Error('Stored credential ciphertext has an unsupported format');
   }
   const nonce = Buffer.from(nonceValue, 'base64');
   const tag = Buffer.from(tagValue, 'base64');
   const ciphertext = Buffer.from(ciphertextValue, 'base64');
   if (nonce.length !== 12 || tag.length !== 16) {
-    throw new Error('Stored S3 credential ciphertext is invalid');
+    throw new Error('Stored credential ciphertext is invalid');
   }
   try {
     const decipher = createDecipheriv(ALGORITHM, parseKey(encodedKey), nonce);
     decipher.setAuthTag(tag);
     return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
   } catch {
-    throw new Error('Could not decrypt stored S3 credentials; verify BACKUP_CREDENTIALS_ENCRYPTION_KEY');
+    throw new Error('Could not decrypt stored credentials; verify BACKUP_CREDENTIALS_ENCRYPTION_KEY');
   }
 }

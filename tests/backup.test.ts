@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { makeTestApp, loginAs, type TestApp } from './helpers/app.js';
+import { decryptCredential } from '../src/admin/credentialEncryption.js';
 
 let active: TestApp[] = [];
+const createPayload = (name: string) => ({
+  name,
+  adminPassword: 'secure-test-password',
+  confirmAdminPassword: 'secure-test-password',
+});
 
 async function app(): Promise<TestApp> {
   const ctx = await makeTestApp();
@@ -48,7 +54,7 @@ describe('backup export', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie: alice.cookie },
-      payload: { name: 'Acme Corp' },
+      payload: createPayload('Acme Corp'),
     });
 
     const snapshot = await exportSnapshot(ctx, admin.cookie);
@@ -56,6 +62,15 @@ describe('backup export', () => {
     expect((snapshot.users as unknown[]).length).toBeGreaterThanOrEqual(2);
     expect((snapshot.instances as unknown[]).length).toBe(1);
     expect((snapshot.jobs as unknown[]).length).toBe(1);
+    const snapshotInstance = (snapshot.instances as Array<Record<string, unknown>>)[0];
+    expect(snapshotInstance?.adminPasswordCiphertext).toBeTypeOf('string');
+    expect(snapshotInstance?.adminPasswordCiphertext).not.toContain('secure-test-password');
+    expect(
+      decryptCredential(
+        snapshotInstance?.adminPasswordCiphertext as string,
+        ctx.config.BACKUP_CREDENTIALS_ENCRYPTION_KEY,
+      ),
+    ).toBe('secure-test-password');
 
     const text = JSON.stringify(snapshot);
     expect(text).not.toContain('accessToken');
@@ -208,7 +223,7 @@ describe('restore onto another instance', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie: alice.cookie },
-      payload: { name: 'Acme Corp' },
+      payload: createPayload('Acme Corp'),
     });
     const sourceSiteName = created.json().instance.siteName;
     const snapshot = await exportSnapshot(source, sourceAdmin.cookie);
@@ -240,6 +255,15 @@ describe('restore onto another instance', () => {
     });
     expect(list.json().instances).toHaveLength(1);
     expect(list.json().instances[0].siteName).toBe(sourceSiteName);
+    const restoredCredentials = await target.store.findInstanceCredentials(
+      list.json().instances[0].id,
+    );
+    expect(
+      decryptCredential(
+        restoredCredentials!.adminPasswordCiphertext!,
+        target.config.BACKUP_CREDENTIALS_ENCRYPTION_KEY,
+      ),
+    ).toBe('secure-test-password');
 
     const job = await target.store.findLatestJobForInstance(list.json().instances[0].id);
     expect(job?.status).toBe('queued');
@@ -284,7 +308,7 @@ describe('restore onto another instance', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie: alice.cookie },
-      payload: { name: 'Acme Corp' },
+      payload: createPayload('Acme Corp'),
     });
     const snapshot = await exportSnapshot(source, sourceAdmin.cookie);
 
@@ -335,7 +359,7 @@ describe('restore onto another instance', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie: alice.cookie },
-      payload: { name: 'Acme Corp' },
+      payload: createPayload('Acme Corp'),
     });
     const snapshot = await exportSnapshot(source, sourceAdmin.cookie);
 
@@ -368,7 +392,7 @@ describe('restore onto another instance', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie: alice.cookie },
-      payload: { name: 'Acme Corp' },
+      payload: createPayload('Acme Corp'),
     });
     await source.store.updateInstance(created.json().instance.id, { status: 'deleting' });
     const snapshot = await exportSnapshot(source, sourceAdmin.cookie);
@@ -406,7 +430,7 @@ describe('restore onto another instance', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie: alice.cookie },
-      payload: { name: 'Acme Corp' },
+      payload: createPayload('Acme Corp'),
     });
     const snapshot = await exportSnapshot(source, sourceAdmin.cookie);
     delete (snapshot.instances as Array<Record<string, unknown>>)[0]!.companyName;

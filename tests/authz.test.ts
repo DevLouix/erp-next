@@ -12,7 +12,11 @@ async function createInstance(cookie: string, name: string): Promise<string> {
     method: 'POST',
     url: '/api/instances',
     headers: { cookie },
-    payload: { name },
+    payload: {
+      name,
+      adminPassword: 'secure-test-password',
+      confirmAdminPassword: 'secure-test-password',
+    },
   });
   expect(res.statusCode).toBe(201);
   return res.json().instance.id;

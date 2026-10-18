@@ -99,7 +99,11 @@ describe('session protection', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { origin: 'https://evil.example.test' },
-      payload: { name: 'Acme' },
+      payload: {
+        name: 'Acme',
+        adminPassword: 'secure-test-password',
+        confirmAdminPassword: 'secure-test-password',
+      },
     });
     expect(res.statusCode).toBe(403);
   });
@@ -113,7 +117,11 @@ describe('session protection', () => {
       method: 'POST',
       url: '/api/instances',
       headers: { cookie: a.cookie, 'x-user-id': b.userId },
-      payload: { name: 'Acme' },
+      payload: {
+        name: 'Acme',
+        adminPassword: 'secure-test-password',
+        confirmAdminPassword: 'secure-test-password',
+      },
     });
     expect(created.statusCode).toBe(201);
     const id = created.json().instance.id;

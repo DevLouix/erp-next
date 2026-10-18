@@ -90,10 +90,15 @@ export class FakeBench implements ProvisioningBench {
     if (this.failOn.has(op)) throw new Error(this.failMessage ?? `bench ${op} failed`);
   }
 
-  async newSite(siteName: string): Promise<void> {
-    this.calls.push({ op: 'new-site', args: [siteName] });
+  async newSite(siteName: string, adminPassword?: string): Promise<void> {
+    this.calls.push({ op: 'new-site', args: [siteName, adminPassword] });
     this.maybeFail('newSite');
     this.siteExists = true;
+  }
+
+  async setAdminPassword(siteName: string, password: string): Promise<void> {
+    this.calls.push({ op: 'set-admin-password', args: [siteName, password] });
+    this.maybeFail('setAdminPassword');
   }
 
   async ensureAppInstalled(siteName: string, app: string): Promise<void> {

@@ -9,12 +9,24 @@ import { serializeInstance } from '../serialize.js';
 
 const createBody = z.object({
   name: z.string().min(1, 'Company name is required').max(100),
+  adminPassword: z.string().min(12).max(128),
+  confirmAdminPassword: z.string(),
+}).refine((body) => body.adminPassword === body.confirmAdminPassword, {
+  message: 'Administrator passwords do not match',
+  path: ['confirmAdminPassword'],
 });
 const updateBody = z.object({
   name: z.string().trim().min(1, 'Company name is required').max(100),
 });
 const deleteBody = z.object({
   confirmSiteName: z.string().min(1),
+});
+const credentialsBody = z.object({
+  adminPassword: z.string().min(12).max(128),
+  confirmAdminPassword: z.string(),
+}).refine((body) => body.adminPassword === body.confirmAdminPassword, {
+  message: 'Administrator passwords do not match',
+  path: ['confirmAdminPassword'],
 });
 
 export function registerInstanceRoutes(
@@ -34,10 +46,29 @@ export function registerInstanceRoutes(
 
     const instance = await instanceService.create(user, {
       companyName: body.name,
+      adminPassword: body.adminPassword,
       idempotencyKey,
     });
 
     reply.code(201).send({ instance: serializeInstance(instance, config) });
+  });
+
+  app.get('/api/instances/:id/credentials', { preHandler: requireAuth }, async (request, reply) => {
+    const { user } = getAuth(request);
+    const { id } = request.params as { id: string };
+    const credentials = await instanceService.loginCredentialsFor(user, id);
+    reply
+      .header('cache-control', 'no-store, private')
+      .header('pragma', 'no-cache')
+      .send({ credentials });
+  });
+
+  app.post('/api/instances/:id/credentials', { preHandler: requireAuth }, async (request, reply) => {
+    const { user } = getAuth(request);
+    const { id } = request.params as { id: string };
+    const body = credentialsBody.parse(request.body ?? {});
+    await instanceService.changeLoginPassword(user, id, body.adminPassword);
+    reply.code(202).header('cache-control', 'no-store, private').send({ status: 'queued' });
   });
 
   app.get('/api/instances', { preHandler: requireAuth }, async (request, reply) => {

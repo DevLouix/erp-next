@@ -39,7 +39,7 @@ const envSchema = z.object({
   PUBLIC_BASE_URL: z.string().url(),
 
   DATABASE_URL: z.string().min(1),
-  BACKUP_CREDENTIALS_ENCRYPTION_KEY: z.string().optional(),
+  BACKUP_CREDENTIALS_ENCRYPTION_KEY: z.string().min(1),
   HEALTHCHECK_BASE_URL: z.string().url().optional(),
 
   SESSION_COOKIE_SECRET: z.string().min(32, 'SESSION_COOKIE_SECRET must be at least 32 characters'),

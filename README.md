@@ -169,6 +169,8 @@ via its `test` profile.
 
 ```bash
 cp .env.example .env          # then edit the values
+# Set BACKUP_CREDENTIALS_ENCRYPTION_KEY to `openssl rand -base64 32` output;
+# keep it stable and provide the same key to the API and worker.
 pnpm install
 
 # 1. Platform database
@@ -202,8 +204,9 @@ ones:
 | `PROVISIONING_BASE_DOMAIN` | Sites get `<slug>.<baseDomain>`; wildcard DNS required. |
 | `BENCH_PATH` / `BENCH_BIN` | Bench directory and binary on the worker host. |
 | `MARIADB_HOST` | MariaDB hostname passed to `bench new-site` as `--db-host` (for example, `frappe-db`). |
-| `MARIADB_ROOT_PASSWORD` / `ERPNEXT_ADMIN_PASSWORD` | Used by `bench new-site`; never logged. |
-| `BACKUP_CREDENTIALS_ENCRYPTION_KEY` | Persistent base64-encoded 32-byte key used by API and worker to encrypt/decrypt S3 credentials stored in PostgreSQL. Generate with `openssl rand -base64 32`; do not rotate without re-entering credentials. |
+| `MARIADB_ROOT_PASSWORD` | MariaDB root password used by Bench; never logged. |
+| `ERPNEXT_ADMIN_PASSWORD` | Legacy fallback for pre-existing provisioning jobs; new instances use their owner's password. |
+| `BACKUP_CREDENTIALS_ENCRYPTION_KEY` | Required persistent base64-encoded 32-byte key used by API and worker for encrypted S3 and instance login credentials. Generate with `openssl rand -base64 32`; do not rotate without a credential migration. |
 
 ## Authentication (Truemoi)
 
@@ -243,8 +246,9 @@ States: `queued → provisioning → installing → configuring → ready`, or `
 Permanent deletion transitions through `deleting`.
 
 - `POST /api/instances` validates the name, derives a strict `[a-z0-9-]` slug and
-  `<slug>.<baseDomain>` hostname, creates the instance as `queued`, and enqueues a
-  job. No long work happens in the request.
+  `<slug>.<baseDomain>` hostname, requires an Administrator password to be set
+  and confirmed, stores it encrypted, creates the instance as `queued`, and
+  enqueues a job. No long work happens in the request.
 - The worker claims one job atomically, then runs:
   `bench new-site` → `bench --site <s> install-app erpnext` (only if missing) →
   `bench --site <s> set-config host_name https://<hostname>` →
@@ -270,6 +274,14 @@ Permanent deletion transitions through `deleting`.
   exponential backoff up to `PROVISION_MAX_ATTEMPTS`. Duplicate requests are prevented by
   unique `site_name`/`hostname`, a per-owner `Idempotency-Key`, and one active job
   per instance.
+- ERPNext login is separate from platform sign-in: use username
+  `Administrator` and the password supplied during instance creation. When the
+  site is ready, its owner or an admin can reveal the saved password or queue a
+  password change from the instance page. The current password stays active until
+  Bench confirms the change. Passwords are encrypted with
+  `BACKUP_CREDENTIALS_ENCRYPTION_KEY`, which must be the same persistent
+  32-byte base64 key in API and worker deployments. Keep it backed up and do
+  not rotate it without a credential migration.
 
 ## Reverse proxy, DNS and TLS
 
@@ -288,7 +300,9 @@ Permanent deletion transitions through `deleting`.
 
 Platform state (users, instances and jobs) can be exported as a JSON snapshot and
 imported into another platform deployment. It does **not** contain ERPNext
-business data, audit history, sessions, OAuth transactions, or tokens.
+business data, audit history, sessions, OAuth transactions, or tokens. It does
+include encrypted instance login-password ciphertext for recovery; restore
+requires the same `BACKUP_CREDENTIALS_ENCRYPTION_KEY` used at export.
 
 Tenant data is backed up separately using Bench's full backup (MariaDB database
 and public/private files, plus Bench's site configuration needed for recovery).
@@ -373,9 +387,11 @@ All routes except `/auth/*` and `/login` require an authenticated session.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `POST` | `/api/instances` | Create an instance. Body `{ "name": "Acme" }`; optional `Idempotency-Key` header. Returns `201 { instance }`. |
+| `POST` | `/api/instances` | Create an instance. Body includes `name`, `adminPassword`, and `confirmAdminPassword` (12–128 characters); optional `Idempotency-Key` header. Returns `201 { instance }`. |
 | `GET` | `/api/instances` | List the caller's instances (all, for admins). |
 | `GET` | `/api/instances/:id` | Get one instance (ownership enforced). |
+| `GET` | `/api/instances/:id/credentials` | Recover the saved ERPNext `Administrator` login for a ready instance; response is non-cacheable. |
+| `POST` | `/api/instances/:id/credentials` | Queue an Administrator password change. Body includes `adminPassword` and `confirmAdminPassword`. |
 | `PATCH` | `/api/instances/:id` | Update the display name only; technical site name and URL are unchanged. |
 | `DELETE` | `/api/instances/:id` | Queue permanent deletion; body must include `{ "confirmSiteName": "<exact hostname>" }`. A full backup is verified first. |
 | `GET` | `/api/instances/:id/backups` | List full database/files backups for an owned instance. |

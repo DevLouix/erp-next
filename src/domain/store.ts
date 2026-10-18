@@ -1,6 +1,7 @@
 import type {
   AuditLogEntry,
   EncryptedSiteBackupCredentials,
+  EncryptedInstanceCredentials,
   BackupSnapshot,
   BackupSnapshotMeta,
   CreateInstanceInput,
@@ -54,6 +55,12 @@ export interface Store {
   ): Promise<Instance | null>;
   findInstanceBySiteName(siteName: string): Promise<Instance | null>;
   findInstanceByHostname(hostname: string): Promise<Instance | null>;
+  findInstanceCredentials(instanceId: string): Promise<EncryptedInstanceCredentials | null>;
+  queueInstanceCredentialChange(
+    instanceId: string,
+    passwordCiphertext: string,
+    maxAttempts: number,
+  ): Promise<ProvisioningJob>;
   listInstancesByOwner(ownerUserId: string): Promise<Instance[]>;
   listAllInstances(): Promise<Instance[]>;
   updateInstance(
@@ -104,6 +111,19 @@ export interface Store {
     jobId: string,
     instanceId: string,
     claim: { attempts: number; lockedAt: Date },
+  ): Promise<boolean>;
+  completeInstanceCredentialChange(
+    jobId: string,
+    instanceId: string,
+    claim: { attempts: number; lockedAt: Date },
+  ): Promise<boolean>;
+  recordInstanceCredentialChangeFailure(
+    jobId: string,
+    instanceId: string,
+    claim: { attempts: number; lockedAt: Date },
+    exhausted: boolean,
+    nextRunAt: Date,
+    error: string,
   ): Promise<boolean>;
   recordProvisioningFailure(
     jobId: string,

@@ -20,7 +20,7 @@ describe('backup credential encryption', () => {
     expect(() => encryptCredential('secret', 'short')).toThrow('base64-encoded 32-byte');
     const encrypted = encryptCredential('secret', key);
     expect(() => decryptCredential(encrypted, 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=')).toThrow(
-      'Could not decrypt stored S3 credentials',
+      'Could not decrypt stored credentials',
     );
   });
 });

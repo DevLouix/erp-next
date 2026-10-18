@@ -8,7 +8,8 @@ import { decryptCredential } from '../admin/credentialEncryption.js';
 
 /** The Bench operations the worker needs. `BenchClient` implements this. */
 export interface ProvisioningBench {
-  newSite(siteName: string): Promise<unknown>;
+  newSite(siteName: string, adminPassword?: string): Promise<unknown>;
+  setAdminPassword(siteName: string, password: string): Promise<void>;
   ensureAppInstalled(siteName: string, app: string): Promise<void>;
   setHostname(siteName: string, hostname: string): Promise<void>;
   configureRouting(): Promise<void>;
@@ -136,6 +137,7 @@ export class ProvisioningWorker {
 
     if (job.type === 'delete') return this.processDeleteJob(job, instance);
     if (job.type === 'backup') return this.processBackupJob(job, instance);
+    if (job.type === 'credentials') return this.processCredentialJob(job, instance);
 
     if (instance.status === 'ready') {
       await this.deps.store.completeJob(job.id);
@@ -156,7 +158,14 @@ export class ProvisioningWorker {
 
       await this.setStatus(instance, 'provisioning');
       if (!(await this.isJobRunning(job))) return 'skipped';
-      await this.deps.bench.newSite(instance.siteName);
+      const encryptedCredentials = await this.deps.store.findInstanceCredentials(instance.id);
+      const adminPassword = encryptedCredentials?.adminPasswordCiphertext
+        ? decryptCredential(
+            encryptedCredentials.adminPasswordCiphertext,
+            this.deps.config.BACKUP_CREDENTIALS_ENCRYPTION_KEY,
+          )
+        : this.deps.config.ERPNEXT_ADMIN_PASSWORD;
+      await this.deps.bench.newSite(instance.siteName, adminPassword);
       if (!(await this.isJobRunning(job))) return 'skipped';
 
       await this.setStatus(instance, 'installing');
@@ -186,6 +195,60 @@ export class ProvisioningWorker {
     } catch (err) {
       if (!(await this.isJobRunning(job))) return 'skipped';
       return this.handleFailure(job, instance, err);
+    }
+  }
+
+  private async processCredentialJob(
+    job: ProvisioningJob,
+    instance: Instance,
+  ): Promise<JobOutcome> {
+    if (!job.lockedAt || !(await this.isJobRunning(job))) return 'skipped';
+    const claim = { attempts: job.attempts, lockedAt: job.lockedAt };
+    const log = { jobId: job.id, instanceId: instance.id, hostname: instance.hostname, attempt: job.attempts };
+    try {
+      const credentials = await this.deps.store.findInstanceCredentials(instance.id);
+      if (!credentials?.pendingAdminPasswordCiphertext) {
+        throw new Error('Pending Administrator password was not found');
+      }
+      const password = decryptCredential(
+        credentials.pendingAdminPasswordCiphertext,
+        this.deps.config.BACKUP_CREDENTIALS_ENCRYPTION_KEY,
+      );
+      await this.deps.bench.setAdminPassword(instance.siteName, password);
+      if (!(await this.isJobRunning(job))) return 'skipped';
+      const completed = await this.deps.store.completeInstanceCredentialChange(
+        job.id,
+        instance.id,
+        claim,
+      );
+      if (!completed) return 'skipped';
+      await this.deps.store.recordAudit({
+        actorUserId: null,
+        action: 'instance.credentials_changed',
+        targetType: 'instance',
+        targetId: instance.id,
+        metadata: { hostname: instance.hostname },
+      });
+      this.logger.info(log, 'instance Administrator password changed');
+      return 'ready';
+    } catch (err) {
+      if (!(await this.isJobRunning(job))) return 'skipped';
+      const message = this.sanitizeError(err);
+      const exhausted = job.attempts >= job.maxAttempts;
+      this.logger.error(
+        { ...log, error: message },
+        'instance Administrator password change failed',
+      );
+      const recorded = await this.deps.store.recordInstanceCredentialChangeFailure(
+        job.id,
+        instance.id,
+        claim,
+        exhausted,
+        new Date(this.now().getTime() + computeBackoffMs(job.attempts)),
+        message,
+      );
+      if (!recorded) return 'skipped';
+      return exhausted ? 'failed' : 'retry';
     }
   }
 

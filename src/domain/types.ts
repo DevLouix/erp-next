@@ -20,7 +20,7 @@ export type InstanceStatus = (typeof INSTANCE_STATUSES)[number];
 export const JOB_STATUSES = ['queued', 'running', 'succeeded', 'failed'] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
-export type JobType = 'provision' | 'delete' | 'backup';
+export type JobType = 'provision' | 'delete' | 'backup' | 'credentials';
 
 export const USER_ROLES = ['user', 'admin'] as const;
 export type UserRole = (typeof USER_ROLES)[number];
@@ -99,8 +99,14 @@ export interface CreateInstanceInput {
   companyName: string;
   siteName: string;
   hostname: string;
+  adminPasswordCiphertext: string;
   idempotencyKey: string | null;
   maxAttempts: number;
+}
+
+export interface EncryptedInstanceCredentials {
+  adminPasswordCiphertext: string | null;
+  pendingAdminPasswordCiphertext: string | null;
 }
 
 export interface CreateJobInput {
@@ -117,6 +123,7 @@ export interface ImportInstanceInput {
   hostname: string;
   status: InstanceStatus;
   errorMessage: string | null;
+  adminPasswordCiphertext?: string | null;
 }
 
 export type SiteBackupStatus = 'queued' | 'running' | 'completed' | 'failed';
@@ -163,7 +170,7 @@ export interface EncryptedSiteBackupCredentials {
 
 // ── Backups ────────────────────────────────────────────────────────────────
 
-export const BACKUP_SCHEMA_VERSION = 2;
+export const BACKUP_SCHEMA_VERSION = 3;
 
 export interface SnapshotUser {
   id: string;
@@ -183,6 +190,7 @@ export interface SnapshotInstance {
   hostname: string;
   status: InstanceStatus;
   errorMessage: string | null;
+  adminPasswordCiphertext?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -198,9 +206,9 @@ export interface SnapshotJob {
 }
 
 /**
- * A portable snapshot of platform state. Deliberately excludes sessions,
- * OAuth transactions and any tokens: restoring a backup never restores the
- * ability to impersonate a live session.
+ * A portable snapshot of platform state. It includes encrypted instance
+ * password ciphertext for login recovery, but excludes sessions, OAuth
+ * transactions and tokens so restores cannot impersonate a live session.
  */
 export interface PlatformSnapshot {
   app: 'erp-next-platform';

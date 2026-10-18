@@ -11,7 +11,21 @@ import { NotFoundError } from '../../domain/errors.js';
 import { getAuth, requireAdmin, requireAuth } from '../../auth/middleware.js';
 import { statusBadge } from '../view.js';
 
-const createFormBody = z.object({ name: z.string().optional() });
+const createFormBody = z.object({
+  name: z.string().optional(),
+  adminPassword: z.string().min(12).max(128),
+  confirmAdminPassword: z.string(),
+}).refine((body) => body.adminPassword === body.confirmAdminPassword, {
+  message: 'Administrator passwords do not match',
+  path: ['confirmAdminPassword'],
+});
+const credentialsFormBody = z.object({
+  adminPassword: z.string().min(12).max(128),
+  confirmAdminPassword: z.string(),
+}).refine((body) => body.adminPassword === body.confirmAdminPassword, {
+  message: 'Administrator passwords do not match',
+  path: ['confirmAdminPassword'],
+});
 const updateFormBody = z.object({ name: z.string().trim().min(1).max(100) });
 const deleteFormBody = z.object({ confirmSiteName: z.string().min(1) });
 const siteBackupSettingsForm = z.object({
@@ -239,9 +253,17 @@ export function registerWebRoutes(
             <label for="name">Company / site name</label>
             <input id="name" type="text" name="name" placeholder="Acme Manufacturing" required maxlength="100">
           </div>
+          <div>
+            <label for="adminPassword">ERPNext Administrator password</label>
+            <input id="adminPassword" type="password" name="adminPassword" autocomplete="new-password" minlength="12" maxlength="128" required>
+          </div>
+          <div>
+            <label for="confirmAdminPassword">Confirm Administrator password</label>
+            <input id="confirmAdminPassword" type="password" name="confirmAdminPassword" autocomplete="new-password" minlength="12" maxlength="128" required>
+          </div>
           <button type="submit">Create instance</button>
         </form>
-        <p class="muted">A dedicated ERPNext site and database will be provisioned for your organization.</p>
+        <p class="muted">A dedicated ERPNext site and database will be provisioned. Your login is <strong>Administrator</strong>; the password is encrypted for recovery and can be changed later.</p>
       </div>
       <div class="card">
         <h2>Your instances</h2>
@@ -265,6 +287,7 @@ export function registerWebRoutes(
     try {
       const instance = await instanceService.create(user, {
         companyName: body.name ?? '',
+        adminPassword: body.adminPassword,
         idempotencyKey: null,
       });
       await reply.redirect(`/dashboard/instances/${encodeURIComponent(instance.id)}`, 302);
@@ -287,6 +310,7 @@ export function registerWebRoutes(
     }
     const latestJob = await store.findLatestJobForInstance(instance.id);
     const siteBackups = await siteBackupService.listFor(user, instance.id);
+    const hasLoginCredentials = await instanceService.hasLoginCredentials(instance.id);
     const ready = instance.status === 'ready';
     const failed = instance.status === 'failed';
     const retryAvailable =
@@ -331,6 +355,84 @@ export function registerWebRoutes(
       : '<tr><td colspan="3" class="muted">No full-site backups yet.</td></tr>';
     const backupPending = siteBackups.some((backup) => backup.status === 'queued' || backup.status === 'running');
     const backupPoll = backupPending ? '<script>setTimeout(function(){ location.reload(); }, 5000);</script>' : '';
+    const credentialChangePending =
+      latestJob?.type === 'credentials' && ['queued', 'running'].includes(latestJob.status);
+    const credentialChangeFailed =
+      latestJob?.type === 'credentials' && latestJob.status === 'failed';
+    const credentialChangeSucceeded =
+      latestJob?.type === 'credentials' && latestJob.status === 'succeeded';
+    const credentialsPanel = ready
+      ? `<div class="card">
+        <h3>ERPNext login</h3>
+        <p>Sign in at your workspace using username <strong>Administrator</strong>.</p>
+        ${
+          hasLoginCredentials
+            ? `<p><button class="action secondary" type="button" id="showCredentials">Show saved password</button></p>
+              <div id="credentialResult" class="muted" aria-live="polite"></div>`
+            : '<p class="muted">No recoverable password is stored for this site yet. Set a new password below to regain managed access.</p>'
+        }
+        ${
+          credentialChangePending
+            ? '<p class="muted" role="status">Password change is being applied. Keep using your current password until the operation completes.</p>'
+            : ''
+        }
+        ${credentialChangePending ? '<script>setTimeout(function () { location.reload(); }, 3000);</script>' : ''}
+        ${
+          credentialChangeSucceeded
+            ? '<p class="muted" role="status">Administrator password updated successfully.</p>'
+            : ''
+        }
+        ${
+          credentialChangeFailed
+            ? `<p class="err-text">Password change failed: ${escapeHtml(latestJob?.lastError ?? 'unknown error')}. The saved current password is unchanged; submit a new password to retry.</p>`
+            : ''
+        }
+        <form class="row" method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/credentials">
+          <div>
+            <label for="newAdminPassword">New Administrator password</label>
+            <input id="newAdminPassword" type="password" name="adminPassword" autocomplete="new-password" minlength="12" maxlength="128" required ${credentialChangePending ? 'disabled' : ''}>
+          </div>
+          <div>
+            <label for="confirmNewAdminPassword">Confirm new password</label>
+            <input id="confirmNewAdminPassword" type="password" name="confirmAdminPassword" autocomplete="new-password" minlength="12" maxlength="128" required ${credentialChangePending ? 'disabled' : ''}>
+          </div>
+          <button class="action" type="submit" ${credentialChangePending ? 'disabled' : ''}>${hasLoginCredentials ? 'Change password' : 'Set password'}</button>
+        </form>
+        <p class="muted">Passwords are encrypted in platform storage. A password change is applied by the worker and remains pending until successful. If you change the password directly in ERPNext, its one-way hash cannot be recovered here; update it through this panel to keep recovery in sync.</p>
+        ${
+          hasLoginCredentials
+            ? `<script>
+              (function () {
+                var button = document.getElementById('showCredentials');
+                var output = document.getElementById('credentialResult');
+                var revealed = false;
+                button.addEventListener('click', function () {
+                  if (revealed) {
+                    output.textContent = '';
+                    button.textContent = 'Show saved password';
+                    revealed = false;
+                    return;
+                  }
+                  button.disabled = true;
+                  fetch('/api/instances/${encodeURIComponent(instance.id)}/credentials', { credentials: 'same-origin', cache: 'no-store' })
+                    .then(function (response) {
+                      if (!response.ok) throw new Error('Could not load saved credentials.');
+                      return response.json();
+                    })
+                    .then(function (data) {
+                      output.textContent = 'Username: ' + data.credentials.username + ' · Password: ' + data.credentials.password;
+                      button.textContent = 'Hide saved password';
+                      revealed = true;
+                    })
+                    .catch(function (error) { output.textContent = error.message; })
+                    .finally(function () { button.disabled = false; });
+                });
+              })();
+            </script>`
+            : ''
+        }
+      </div>`
+      : '';
     const body = `
       ${errorBox}
       <div class="page-heading">
@@ -341,11 +443,12 @@ export function registerWebRoutes(
         <p class="muted">${hostnameLink(instance.hostname)} · ${escapeHtml(instance.siteName)}</p>
         <p>Status: ${statusBadge(instance.status)}</p>
         ${errorLine}
-        <p class="muted">Provisioning attempts: ${latestJob?.attempts ?? 0} / ${latestJob?.maxAttempts ?? 0}</p>
+        <p class="muted">Latest operation attempts: ${latestJob?.attempts ?? 0} / ${latestJob?.maxAttempts ?? 0}</p>
         <p><a href="/dashboard">Back to dashboard</a></p>
         ${poll}
       </div>`;
     const editableBody = `
+      ${credentialsPanel}
       <div class="card">
         <h3>Workspace settings</h3>
         <form class="row" method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/update">
@@ -419,6 +522,19 @@ export function registerWebRoutes(
       await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}`, 303);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Could not update instance';
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}?error=${encodeURIComponent(message)}`, 303);
+    }
+  });
+
+  app.post('/dashboard/instances/:id/credentials', { preHandler: requireAuth }, async (request, reply) => {
+    const { user } = getAuth(request);
+    const { id } = request.params as { id: string };
+    const body = credentialsFormBody.parse(request.body ?? {});
+    try {
+      await instanceService.changeLoginPassword(user, id, body.adminPassword);
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}`, 303);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not change login password';
       await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}?error=${encodeURIComponent(message)}`, 303);
     }
   });
@@ -608,11 +724,11 @@ export function registerWebRoutes(
           }
           <button class="action" type="submit">Save backup policy</button>
         </form>
-        <p class="muted">S3 credentials are encrypted before they are stored in the platform database and are never returned by the settings API. Configure BACKUP_CREDENTIALS_ENCRYPTION_KEY as the same persistent secret in the API and worker deployments. Local full backups remain available if remote upload fails. Next run: ${siteBackupSettings.nextRunAt?.toISOString() ?? 'not scheduled'}.</p>
+        <p class="muted">S3 credentials and per-instance Administrator passwords are encrypted before storage. Configure the same persistent BACKUP_CREDENTIALS_ENCRYPTION_KEY in API and worker deployments. Local full backups remain available if remote upload fails. Next run: ${siteBackupSettings.nextRunAt?.toISOString() ?? 'not scheduled'}.</p>
       </div>
       <div class="card">
         <h2>Backup &amp; restore</h2>
-        <p class="muted">Platform snapshots contain accounts, ownership, instances and jobs — never sessions, tokens, or ERPNext business data.</p>
+        <p class="muted">Platform snapshots contain accounts, ownership, instances and jobs — never sessions, tokens, or ERPNext business data. Instance login passwords are included only as encrypted ciphertext; retain the matching BACKUP_CREDENTIALS_ENCRYPTION_KEY to restore them.</p>
         <p class="row" style="align-items:center">
           <a class="primary" href="/api/admin/backup/export">Download current state</a>
           <form method="post" action="/admin/backup" class="inline row" style="align-items:center">

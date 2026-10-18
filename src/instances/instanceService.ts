@@ -4,9 +4,11 @@ import type { Store } from '../domain/store.js';
 import type { Instance, User } from '../domain/types.js';
 import { DuplicateError, ForbiddenError, NotFoundError, ValidationError } from '../domain/errors.js';
 import { deriveSiteNaming, type SiteNaming } from './validation.js';
+import { decryptCredential, encryptCredential } from '../admin/credentialEncryption.js';
 
 export interface CreateInstanceRequest {
   companyName: string;
+  adminPassword: string;
   idempotencyKey: string | null;
 }
 
@@ -33,6 +35,7 @@ export class InstanceService {
       if (existing) return existing;
     }
 
+    this.validateAdminPassword(request.adminPassword);
     const naming = await this.chooseNaming(request.companyName);
 
     try {
@@ -41,6 +44,10 @@ export class InstanceService {
         companyName: request.companyName.trim(),
         siteName: naming.siteName,
         hostname: naming.hostname,
+        adminPasswordCiphertext: encryptCredential(
+          request.adminPassword,
+          this.config.BACKUP_CREDENTIALS_ENCRYPTION_KEY,
+        ),
         idempotencyKey: request.idempotencyKey,
         maxAttempts: this.config.PROVISION_MAX_ATTEMPTS,
       });
@@ -78,6 +85,74 @@ export class InstanceService {
         });
       }
       throw err;
+    }
+  }
+
+  async loginCredentialsFor(
+    user: User,
+    instanceId: string,
+  ): Promise<{ username: 'Administrator'; password: string }> {
+    const instance = await this.getFor(user, instanceId);
+    if (instance.status !== 'ready') {
+      throw new ValidationError('Login credentials are available once the instance is ready');
+    }
+    const credentials = await this.store.findInstanceCredentials(instanceId);
+    if (!credentials?.adminPasswordCiphertext) {
+      throw new ValidationError('Set a new Administrator password to recover access to this instance');
+    }
+    const password = decryptCredential(
+      credentials.adminPasswordCiphertext,
+      this.config.BACKUP_CREDENTIALS_ENCRYPTION_KEY,
+    );
+    await this.store.recordAudit({
+      actorUserId: user.id,
+      action: 'instance.credentials_revealed',
+      targetType: 'instance',
+      targetId: instanceId,
+      metadata: { hostname: instance.hostname },
+    });
+    return { username: 'Administrator', password };
+  }
+
+  async changeLoginPassword(
+    user: User,
+    instanceId: string,
+    password: string,
+  ): Promise<void> {
+    const instance = await this.getFor(user, instanceId);
+    if (instance.status !== 'ready') {
+      throw new ValidationError('Login credentials can only be changed on a ready instance');
+    }
+    this.validateAdminPassword(password);
+    try {
+      await this.store.queueInstanceCredentialChange(
+        instanceId,
+        encryptCredential(password, this.config.BACKUP_CREDENTIALS_ENCRYPTION_KEY),
+        this.config.PROVISION_MAX_ATTEMPTS,
+      );
+    } catch (err) {
+      if (err instanceof DuplicateError) {
+        throw new ValidationError('Another instance operation is already in progress');
+      }
+      throw err;
+    }
+    await this.store.recordAudit({
+      actorUserId: user.id,
+      action: 'instance.credentials_change_requested',
+      targetType: 'instance',
+      targetId: instanceId,
+      metadata: { hostname: instance.hostname },
+    });
+  }
+
+  async hasLoginCredentials(instanceId: string): Promise<boolean> {
+    const credentials = await this.store.findInstanceCredentials(instanceId);
+    return Boolean(credentials?.adminPasswordCiphertext);
+  }
+
+  private validateAdminPassword(password: string): void {
+    if (password.length < 12 || password.length > 128) {
+      throw new ValidationError('Administrator password must be between 12 and 128 characters');
     }
   }
 

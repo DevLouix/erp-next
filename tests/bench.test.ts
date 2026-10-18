@@ -61,6 +61,39 @@ describe('BenchClient command construction', () => {
     expect(runner.calls[0]?.args).not.toContain('--mariadb-host');
   });
 
+  it('uses the supplied per-site Administrator password and redacts it from command errors', async () => {
+    const { client, runner } = makeClient();
+    runner.responses.push({
+      stdout: '',
+      stderr: 'Failed while applying customer-specific-password',
+      code: 1,
+      timedOut: false,
+    });
+    await expect(
+      client.newSite('acme.apps.example.test', 'customer-specific-password'),
+    ).rejects.toThrow('[REDACTED]');
+    expect(runner.calls[0]?.args).toContain('customer-specific-password');
+
+    await client.newSite('acme.apps.example.test', 'customer-specific-password');
+    expect(runner.calls[1]?.args).toContain('customer-specific-password');
+
+    runner.responses.push({
+      stdout: '',
+      stderr: 'Failed while applying customer-specific-password',
+      code: 1,
+      timedOut: false,
+    });
+    await expect(
+      client.setAdminPassword('acme.apps.example.test', 'customer-specific-password'),
+    ).rejects.toThrow('[REDACTED]');
+    expect(runner.calls[2]?.args).toEqual([
+      '--site',
+      'acme.apps.example.test',
+      'set-admin-password',
+      'customer-specific-password',
+    ]);
+  });
+
   it('creates and archives complete Bench database and file backups', async () => {
     const root = await mkdtemp(join(tmpdir(), 'erpnext-backup-test-'));
     const site = 'acme.apps.example.test';

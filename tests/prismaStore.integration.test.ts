@@ -53,6 +53,7 @@ suite('PrismaStore (integration)', () => {
       companyName: 'One',
       siteName: 'one.apps.test',
       hostname: 'one.apps.test',
+      adminPasswordCiphertext: 'ciphertext-one',
       idempotencyKey: null,
       maxAttempts: 5,
     });
@@ -61,6 +62,7 @@ suite('PrismaStore (integration)', () => {
       companyName: 'Two',
       siteName: 'two.apps.test',
       hostname: 'two.apps.test',
+      adminPasswordCiphertext: 'ciphertext-two',
       idempotencyKey: null,
       maxAttempts: 5,
     });
@@ -83,6 +85,7 @@ suite('PrismaStore (integration)', () => {
       companyName: 'Three',
       siteName: 'three.apps.test',
       hostname: 'three.apps.test',
+      adminPasswordCiphertext: 'ciphertext-three',
       idempotencyKey: null,
       maxAttempts: 5,
     });

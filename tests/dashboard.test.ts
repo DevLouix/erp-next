@@ -57,6 +57,7 @@ describe('dashboard presentation', () => {
     expect(detail.body).toContain('Retry provisioning');
     expect(detail.body).toMatch(/Retry provisioning<\/button>/);
     expect(detail.body).toContain('disabled>Retry provisioning</button>');
+    expect(detail.body).toContain('<a class="dashboard-back-link" href="/dashboard">Back to dashboard</a>');
   });
 
   it('returns a helpful dashboard message for mismatched creation passwords', async () => {

@@ -227,6 +227,9 @@ function layout(title: string, body: string, user?: User | null): string {
     .card h2 { font-size: 1.08rem; }
     .card h3 { font-size: .98rem; }
     .card > :last-child { margin-bottom: 0; }
+    .card p.dashboard-back-link-row { margin-top: 1.5rem; }
+    a.dashboard-back-link { display: inline-flex; min-height: 2.4rem; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 7px; padding: .45rem .85rem; background: var(--surface-raised); color: var(--text); font-size: .82rem; font-weight: 580; text-decoration: none; transition: border-color .16s, background .16s, color .16s; }
+    a.dashboard-back-link:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); text-decoration: none; }
     .card > p:first-of-type { margin-top: .35rem; }
     form.row { display: flex; align-items: end; flex-wrap: wrap; gap: .85rem; }
     form.row > div { flex: 1 1 180px; }
@@ -780,7 +783,7 @@ export function registerWebRoutes(
         <p>Status: ${statusBadge(instance.status)}</p>
         ${errorLine}
         <p class="muted">Latest operation attempts: ${latestJob?.attempts ?? 0} / ${latestJob?.maxAttempts ?? 0}</p>
-        <p><a href="/dashboard">Back to dashboard</a></p>
+        <p class="dashboard-back-link-row"><a class="dashboard-back-link" href="/dashboard">Back to dashboard</a></p>
         ${poll}
       </div>`;
     const editableBody = `

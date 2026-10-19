@@ -169,6 +169,95 @@ describe('ProvisioningWorker login credential changes', () => {
   });
 });
 
+describe('custom domain lifecycle', () => {
+  it('verifies DNS ownership, configures Frappe routing, and removes the alias', async () => {
+    const instance = await seed();
+    await store.updateInstance(instance.id, { status: 'ready' });
+    await store.completeJob((await store.findLatestJobForInstance(instance.id))!.id);
+    const dns = {
+      resolveTxt: async () => {
+        const saved = await store.findInstanceById(instance.id);
+        return [[`erpnext-domain-verification=${saved?.customDomainVerificationToken}`]];
+      },
+    };
+    service = new InstanceService(store, config, dns);
+    await service.addCustomDomain(owner, instance.id, ' ERP.Acme.com. ');
+    await service.verifyCustomDomain(owner, instance.id);
+
+    const pending = await store.findInstanceById(instance.id);
+    expect(pending?.customDomain).toBe('erp.acme.com');
+    expect(pending?.customDomainStatus).toBe('configuring');
+    const bench = new FakeBench();
+    const health = new FakeHealth();
+    const worker = makeWorker(bench, health);
+    await worker.processJob((await store.claimNextJob(new Date()))!);
+
+    expect(bench.calls).toContainEqual({
+      op: 'add-domain',
+      args: [instance.siteName, 'erp.acme.com'],
+    });
+    expect(health.hosts).toContain('erp.acme.com');
+    expect((await store.findInstanceById(instance.id))?.customDomainStatus).toBe('active');
+
+    await service.removeCustomDomain(owner, instance.id);
+    await worker.processJob((await store.claimNextJob(new Date()))!);
+    expect(bench.calls).toContainEqual({
+      op: 'remove-domain',
+      args: [instance.siteName, 'erp.acme.com'],
+    });
+    expect((await store.findInstanceById(instance.id))?.customDomain).toBeNull();
+    expect((await store.findLatestJobForInstance(instance.id))?.status).toBe('succeeded');
+  });
+
+  it('does not bind a domain unless the ownership TXT proof matches', async () => {
+    const instance = await seed();
+    await store.updateInstance(instance.id, { status: 'ready' });
+    await store.completeJob((await store.findLatestJobForInstance(instance.id))!.id);
+    service = new InstanceService(store, config, {
+      resolveTxt: async () => [['wrong-token']],
+    });
+    await service.addCustomDomain(owner, instance.id, 'erp.acme.com');
+    await expect(service.verifyCustomDomain(owner, instance.id)).rejects.toThrow('TXT record');
+    expect((await store.findLatestJobForInstance(instance.id))?.type).toBe('provision');
+    expect((await store.findInstanceById(instance.id))?.customDomainStatus).toBe('pending');
+  });
+
+  it('records terminal Frappe alias failures without marking the instance failed', async () => {
+    const instance = await seed();
+    await store.updateInstance(instance.id, { status: 'ready' });
+    await store.completeJob((await store.findLatestJobForInstance(instance.id))!.id);
+    service = new InstanceService(store, {
+      ...config,
+      PROVISION_MAX_ATTEMPTS: 1,
+    }, {
+      resolveTxt: async () => {
+        const saved = await store.findInstanceById(instance.id);
+        return [[`erpnext-domain-verification=${saved?.customDomainVerificationToken}`]];
+      },
+    });
+    await service.addCustomDomain(owner, instance.id, 'erp.acme.com');
+    await service.verifyCustomDomain(owner, instance.id);
+    const bench = new FakeBench();
+    bench.failOn.add('addDomain');
+    const worker = makeWorker(bench, new FakeHealth(), { PROVISION_MAX_ATTEMPTS: 1 });
+    expect(await worker.processJob((await store.claimNextJob(new Date()))!)).toBe('failed');
+    const updated = await store.findInstanceById(instance.id);
+    expect(updated?.status).toBe('ready');
+    expect(updated?.customDomainStatus).toBe('failed');
+    expect(updated?.customDomainError).toContain('bench addDomain failed');
+  });
+
+  it('requires a custom domain route to be detached before deleting its workspace', async () => {
+    const instance = await seed();
+    await store.updateInstance(instance.id, { status: 'ready' });
+    await store.completeJob((await store.findLatestJobForInstance(instance.id))!.id);
+    await service.addCustomDomain(owner, instance.id, 'erp.acme.com');
+    await expect(service.deleteFor(owner, instance.id, instance.hostname))
+      .rejects.toThrow('Remove erp.acme.com from the Dokploy route and DNS');
+    expect((await store.findLatestJobForInstance(instance.id))?.type).toBe('provision');
+  });
+});
+
 describe('ProvisioningWorker failure handling', () => {
   it('retries with a recorded error and cleans up the partial site', async () => {
     const instance = await seed();

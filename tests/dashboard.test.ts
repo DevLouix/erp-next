@@ -142,6 +142,53 @@ describe('dashboard presentation', () => {
     expect((await ctx.store.findLatestJobForInstance(instance.id))?.type).toBe('provision');
   });
 
+  it('guides the owner through custom-domain DNS verification and queues Frappe setup', async () => {
+    ctx = await makeTestApp({}, {
+      resolveTxt: async () => {
+        const instance = await ctx.store.findInstanceByCustomDomain('erp.acme.com');
+        return [[`erpnext-domain-verification=${instance?.customDomainVerificationToken}`]];
+      },
+    });
+    const { cookie } = await loginAs(ctx, { sub: 'owner', email: 'owner@example.test' });
+    const created = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/instances',
+      headers: { cookie },
+      payload: createPayload('Acme Manufacturing'),
+    });
+    const instance = created.json().instance;
+    await ctx.store.updateInstance(instance.id, { status: 'ready' });
+    await ctx.store.completeJob((await ctx.store.findLatestJobForInstance(instance.id))!.id);
+
+    const added = await ctx.app.inject({
+      method: 'POST',
+      url: `/dashboard/instances/${encodeURIComponent(instance.id)}/domains`,
+      headers: { cookie },
+      payload: { domain: 'ERP.Acme.com.' },
+    });
+    expect(added.statusCode).toBe(303);
+    const saved = await ctx.store.findInstanceById(instance.id);
+    expect(saved?.customDomain).toBe('erp.acme.com');
+    expect(saved?.customDomainStatus).toBe('pending');
+
+    const detail = await ctx.app.inject({
+      method: 'GET',
+      url: `/dashboard/instances/${encodeURIComponent(instance.id)}`,
+      headers: { cookie },
+    });
+    expect(detail.body).toContain(`_erpnext-verification.erp.acme.com`);
+    expect(detail.body).toContain('before any traffic is routed');
+
+    const verified = await ctx.app.inject({
+      method: 'POST',
+      url: `/dashboard/instances/${encodeURIComponent(instance.id)}/domains/verify`,
+      headers: { cookie },
+    });
+    expect(verified.statusCode).toBe(303);
+    expect((await ctx.store.findInstanceById(instance.id))?.customDomainStatus).toBe('configuring');
+    expect((await ctx.store.findLatestJobForInstance(instance.id))?.type).toBe('domain');
+  });
+
   it('enables Retry after the provisioning job fails', async () => {
     ctx = await makeTestApp();
     const { cookie } = await loginAs(ctx, { sub: 'owner', email: 'owner@example.test' });

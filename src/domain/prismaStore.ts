@@ -10,6 +10,7 @@ import type {
   BackupSnapshotMeta,
   CreateInstanceInput,
   CreateJobInput,
+  CustomDomainStatus,
   ImportInstanceInput,
   Instance,
   InstanceStatus,
@@ -44,6 +45,12 @@ function toInstance(row: {
   companyName: string;
   siteName: string;
   hostname: string;
+  customDomain: string | null;
+  customDomainVerificationToken: string | null;
+  customDomainStatus: string | null;
+  customDomainCreatedAt: Date | null;
+  customDomainVerifiedAt: Date | null;
+  customDomainError: string | null;
   status: string;
   errorMessage: string | null;
   idempotencyKey: string | null;
@@ -58,6 +65,12 @@ function toInstance(row: {
     companyName: row.companyName,
     siteName: row.siteName,
     hostname: row.hostname,
+    customDomain: row.customDomain,
+    customDomainVerificationToken: row.customDomainVerificationToken,
+    customDomainStatus: row.customDomainStatus as CustomDomainStatus | null,
+    customDomainCreatedAt: row.customDomainCreatedAt,
+    customDomainVerifiedAt: row.customDomainVerifiedAt,
+    customDomainError: row.customDomainError,
     status: row.status as InstanceStatus,
     errorMessage: row.errorMessage,
     idempotencyKey: row.idempotencyKey,
@@ -271,6 +284,11 @@ export class PrismaStore implements Store {
     return row ? toInstance(row) : null;
   }
 
+  async findInstanceByCustomDomain(domain: string): Promise<Instance | null> {
+    const row = await this.prisma.instance.findUnique({ where: { customDomain: domain } });
+    return row ? toInstance(row) : null;
+  }
+
   async findInstanceCredentials(instanceId: string): Promise<EncryptedInstanceCredentials | null> {
     const row = await this.prisma.instance.findUnique({
       where: { id: instanceId },
@@ -343,10 +361,147 @@ export class PrismaStore implements Store {
 
   async updateInstance(
     id: string,
-    patch: Partial<{ companyName: string; status: InstanceStatus; errorMessage: string | null }>,
+    patch: Partial<{
+      companyName: string;
+      status: InstanceStatus;
+      errorMessage: string | null;
+      customDomain: string | null;
+      customDomainVerificationToken: string | null;
+      customDomainStatus: CustomDomainStatus | null;
+      customDomainCreatedAt: Date | null;
+      customDomainVerifiedAt: Date | null;
+      customDomainError: string | null;
+    }>,
   ): Promise<Instance> {
-    const row = await this.prisma.instance.update({ where: { id }, data: patch });
-    return toInstance(row);
+    try {
+      const row = await this.prisma.instance.update({ where: { id }, data: patch });
+      return toInstance(row);
+    } catch (err) {
+      if (isUniqueViolation(err) && patch.customDomain) {
+        throw new DuplicateError('custom_domain', patch.customDomain);
+      }
+      throw err;
+    }
+  }
+
+  async queueCustomDomainJob(
+    instanceId: string,
+    patch: Partial<Pick<Instance, 'customDomainStatus' | 'customDomainVerifiedAt' | 'customDomainError'>>,
+    maxAttempts: number,
+  ): Promise<ProvisioningJob> {
+    return this.prisma.$transaction(async (tx) => {
+      const instance = await tx.instance.findUnique({ where: { id: instanceId } });
+      if (!instance || instance.status !== 'ready') {
+        throw new ValidationError('Custom domains can only be changed on a ready instance');
+      }
+      const active = await tx.provisioningJob.findFirst({
+        where: { instanceId, status: { in: ['queued', 'running'] } },
+      });
+      if (active) throw new DuplicateError('active_job_for_instance', instanceId);
+      const latest = await tx.provisioningJob.findFirst({
+        where: { instanceId },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
+      const now = new Date();
+      const job = latest
+        ? await tx.provisioningJob.update({
+            where: { id: latest.id },
+            data: {
+              type: 'domain',
+              status: 'queued',
+              attempts: 0,
+              maxAttempts,
+              nextRunAt: now,
+              lockedAt: null,
+              cleanupBeforeRun: false,
+              lastError: null,
+              siteBackupId: null,
+            },
+          })
+        : await tx.provisioningJob.create({
+            data: { instanceId, type: 'domain', maxAttempts },
+          });
+      await tx.instance.update({ where: { id: instanceId }, data: patch });
+      return toJob(job);
+    });
+  }
+
+  async completeCustomDomainJob(
+    jobId: string,
+    instanceId: string,
+    claim: { attempts: number; lockedAt: Date },
+    removing: boolean,
+  ): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const completed = await tx.provisioningJob.updateMany({
+        where: {
+          id: jobId,
+          instanceId,
+          type: 'domain',
+          status: 'running',
+          attempts: claim.attempts,
+          lockedAt: claim.lockedAt,
+        },
+        data: { status: 'succeeded', lockedAt: null, lastError: null },
+      });
+      if (completed.count === 0) return false;
+      await tx.instance.update({
+        where: { id: instanceId },
+        data: removing
+          ? {
+              customDomain: null,
+              customDomainVerificationToken: null,
+              customDomainStatus: null,
+              customDomainCreatedAt: null,
+              customDomainVerifiedAt: null,
+              customDomainError: null,
+            }
+          : { customDomainStatus: 'active', customDomainError: null },
+      });
+      return true;
+    });
+  }
+
+  async recordCustomDomainFailure(
+    jobId: string,
+    instanceId: string,
+    claim: { attempts: number; lockedAt: Date },
+    exhausted: boolean,
+    nextRunAt: Date,
+    error: string,
+  ): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const failed = await tx.provisioningJob.updateMany({
+        where: {
+          id: jobId,
+          instanceId,
+          type: 'domain',
+          status: 'running',
+          attempts: claim.attempts,
+          lockedAt: claim.lockedAt,
+        },
+        data: {
+          status: exhausted ? 'failed' : 'queued',
+          lockedAt: null,
+          nextRunAt,
+          lastError: error,
+        },
+      });
+      if (failed.count === 0) return false;
+      const instance = await tx.instance.findUnique({ where: { id: instanceId } });
+      if (instance) {
+        await tx.instance.update({
+          where: { id: instanceId },
+          data: {
+            customDomainStatus: exhausted && instance.customDomainStatus !== 'removing'
+              ? 'failed'
+              : instance.customDomainStatus,
+            customDomainError: error,
+          },
+        });
+      }
+      return true;
+    });
   }
 
   async queueInstanceDeletion(instanceId: string, maxAttempts: number): Promise<ProvisioningJob> {
@@ -647,6 +802,12 @@ export class PrismaStore implements Store {
         companyName: input.companyName,
         siteName: input.siteName,
         hostname: input.hostname,
+        customDomain: input.customDomain ?? null,
+        customDomainStatus: input.customDomain ? 'pending' : null,
+        customDomainVerificationToken: input.customDomainVerificationToken ?? null,
+        customDomainCreatedAt: input.customDomain ? new Date() : null,
+        customDomainVerifiedAt: null,
+        customDomainError: null,
         status: input.status,
         errorMessage: input.errorMessage,
         adminPasswordCiphertext: input.adminPasswordCiphertext ?? null,
@@ -655,6 +816,12 @@ export class PrismaStore implements Store {
         ownerUserId: input.ownerUserId,
         companyName: input.companyName,
         hostname: input.hostname,
+        customDomain: input.customDomain ?? null,
+        customDomainStatus: input.customDomain ? 'pending' : null,
+        customDomainVerificationToken: input.customDomainVerificationToken ?? null,
+        customDomainCreatedAt: input.customDomain ? new Date() : null,
+        customDomainVerifiedAt: null,
+        customDomainError: null,
         status: input.status,
         errorMessage: input.errorMessage,
         ...(input.adminPasswordCiphertext === undefined
@@ -746,6 +913,17 @@ export class PrismaStore implements Store {
             where: { id: job.instanceId },
             data: { pendingAdminPasswordCiphertext: null },
           });
+        } else if (job.type === 'domain' && exhausted) {
+          const instance = await tx.instance.findUnique({ where: { id: job.instanceId } });
+          if (instance) {
+            await tx.instance.update({
+              where: { id: instance.id },
+              data: {
+                customDomainStatus: instance.customDomainStatus === 'removing' ? 'removing' : 'failed',
+                customDomainError: message,
+              },
+            });
+          }
         }
         return true;
       });

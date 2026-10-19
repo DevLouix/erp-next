@@ -7,6 +7,7 @@ import type {
   BackupSnapshotMeta,
   CreateInstanceInput,
   CreateJobInput,
+  CustomDomainStatus,
   ImportInstanceInput,
   Instance,
   InstanceStatus,
@@ -34,6 +35,12 @@ interface InstancePatch {
   companyName?: string;
   status?: InstanceStatus;
   errorMessage?: string | null;
+  customDomain?: string | null;
+  customDomainVerificationToken?: string | null;
+  customDomainStatus?: CustomDomainStatus | null;
+  customDomainCreatedAt?: Date | null;
+  customDomainVerifiedAt?: Date | null;
+  customDomainError?: string | null;
 }
 
 /**
@@ -133,6 +140,12 @@ export class MemoryStore implements Store {
       companyName: input.companyName,
       siteName: input.siteName,
       hostname: input.hostname,
+      customDomain: null,
+      customDomainVerificationToken: null,
+      customDomainStatus: null,
+      customDomainCreatedAt: null,
+      customDomainVerifiedAt: null,
+      customDomainError: null,
       status: 'queued',
       errorMessage: null,
       idempotencyKey: input.idempotencyKey,
@@ -168,6 +181,13 @@ export class MemoryStore implements Store {
 
   async findInstanceByHostname(hostname: string): Promise<Instance | null> {
     for (const i of this.instances.values()) if (i.hostname === hostname) return i;
+    return null;
+  }
+
+  async findInstanceByCustomDomain(domain: string): Promise<Instance | null> {
+    for (const instance of this.instances.values()) {
+      if (instance.customDomain === domain) return instance;
+    }
     return null;
   }
 
@@ -227,9 +247,114 @@ export class MemoryStore implements Store {
   async updateInstance(id: string, patch: InstancePatch): Promise<Instance> {
     const instance = this.instances.get(id);
     if (!instance) throw new Error(`Instance not found: ${id}`);
+    if (patch.customDomain) {
+      const conflicting = await this.findInstanceByCustomDomain(patch.customDomain);
+      if (conflicting && conflicting.id !== id) {
+        throw new DuplicateError('custom_domain', patch.customDomain);
+      }
+    }
     const updated: Instance = { ...instance, ...patch, updatedAt: new Date() };
     this.instances.set(id, updated);
     return updated;
+  }
+
+  async queueCustomDomainJob(
+    instanceId: string,
+    patch: Partial<Pick<Instance, 'customDomainStatus' | 'customDomainVerifiedAt' | 'customDomainError'>>,
+    maxAttempts: number,
+  ): Promise<ProvisioningJob> {
+    const instance = this.instances.get(instanceId);
+    if (!instance || instance.status !== 'ready') {
+      throw new ValidationError('Custom domains can only be changed on a ready instance');
+    }
+    const latest = await this.findLatestJobForInstance(instanceId);
+    if (latest && (latest.status === 'queued' || latest.status === 'running')) {
+      throw new DuplicateError('active_job_for_instance', instanceId);
+    }
+    const job = latest
+      ? await this.patchJob(latest.id, {
+          type: 'domain',
+          status: 'queued',
+          attempts: 0,
+          maxAttempts,
+          nextRunAt: new Date(),
+          lockedAt: null,
+          cleanupBeforeRun: false,
+          lastError: null,
+          siteBackupId: null,
+        })
+      : await this.createJob({ instanceId, maxAttempts, type: 'domain' });
+    this.instances.set(instanceId, { ...instance, ...patch, updatedAt: new Date() });
+    return job;
+  }
+
+  async completeCustomDomainJob(
+    jobId: string,
+    instanceId: string,
+    claim: { attempts: number; lockedAt: Date },
+    removing: boolean,
+  ): Promise<boolean> {
+    const job = this.jobs.get(jobId);
+    const instance = this.instances.get(instanceId);
+    if (
+      !job || job.type !== 'domain' || job.status !== 'running' || !instance ||
+      job.attempts !== claim.attempts || job.lockedAt?.getTime() !== claim.lockedAt.getTime()
+    ) return false;
+    const now = new Date();
+    this.jobs.set(jobId, {
+      ...job,
+      status: 'succeeded',
+      lockedAt: null,
+      lastError: null,
+      updatedAt: now,
+    });
+    this.instances.set(instanceId, removing
+      ? {
+          ...instance,
+          customDomain: null,
+          customDomainVerificationToken: null,
+          customDomainStatus: null,
+          customDomainCreatedAt: null,
+          customDomainVerifiedAt: null,
+          customDomainError: null,
+          updatedAt: now,
+        }
+      : { ...instance, customDomainStatus: 'active', customDomainError: null, updatedAt: now });
+    return true;
+  }
+
+  async recordCustomDomainFailure(
+    jobId: string,
+    instanceId: string,
+    claim: { attempts: number; lockedAt: Date },
+    exhausted: boolean,
+    nextRunAt: Date,
+    error: string,
+  ): Promise<boolean> {
+    const job = this.jobs.get(jobId);
+    const instance = this.instances.get(instanceId);
+    if (
+      !job || job.type !== 'domain' || job.status !== 'running' || !instance ||
+      job.attempts !== claim.attempts || job.lockedAt?.getTime() !== claim.lockedAt.getTime()
+    ) return false;
+    const now = new Date();
+    this.jobs.set(jobId, {
+      ...job,
+      status: exhausted ? 'failed' : 'queued',
+      lockedAt: null,
+      nextRunAt,
+      lastError: error,
+      updatedAt: now,
+    });
+    this.instances.set(instanceId, {
+      ...instance,
+      customDomainStatus: exhausted && instance.customDomainStatus !== 'removing'
+        ? 'failed'
+        : instance.customDomainStatus,
+      customDomainError: error,
+      updatedAt: now,
+    });
+    return true;
   }
 
   async queueInstanceDeletion(instanceId: string, maxAttempts: number): Promise<ProvisioningJob> {
@@ -448,12 +573,24 @@ export class MemoryStore implements Store {
 
   async importInstance(input: ImportInstanceInput): Promise<Instance> {
     const existing = await this.findInstanceBySiteName(input.siteName);
+    if (input.customDomain) {
+      const domainOwner = await this.findInstanceByCustomDomain(input.customDomain);
+      if (domainOwner && domainOwner.siteName !== input.siteName) {
+        throw new DuplicateError('custom_domain', input.customDomain);
+      }
+    }
     if (existing) {
       const updated: Instance = {
         ...existing,
         ownerUserId: input.ownerUserId,
         companyName: input.companyName,
         hostname: input.hostname,
+        customDomain: input.customDomain ?? null,
+        customDomainVerificationToken: input.customDomainVerificationToken ?? null,
+        customDomainStatus: input.customDomain ? 'pending' : null,
+        customDomainCreatedAt: input.customDomain ? new Date() : null,
+        customDomainVerifiedAt: null,
+        customDomainError: null,
         status: input.status,
         errorMessage: input.errorMessage,
         updatedAt: new Date(),
@@ -479,6 +616,12 @@ export class MemoryStore implements Store {
       companyName: input.companyName,
       siteName: input.siteName,
       hostname: input.hostname,
+      customDomain: input.customDomain ?? null,
+      customDomainVerificationToken: input.customDomainVerificationToken ?? null,
+      customDomainStatus: input.customDomain ? 'pending' : null,
+      customDomainCreatedAt: input.customDomain ? new Date() : null,
+      customDomainVerifiedAt: null,
+      customDomainError: null,
       status: input.status,
       errorMessage: input.errorMessage,
       idempotencyKey: null,
@@ -569,6 +712,16 @@ export class MemoryStore implements Store {
             this.instanceCredentials.set(job.instanceId, {
               ...credentials,
               pendingAdminPasswordCiphertext: null,
+            });
+          }
+        } else if (job.type === 'domain') {
+          const instance = this.instances.get(job.instanceId);
+          if (instance) {
+            this.instances.set(instance.id, {
+              ...instance,
+              customDomainStatus: instance.customDomainStatus === 'removing' ? 'removing' : 'failed',
+              customDomainError: 'Custom domain operation timed out and exceeded the retry limit',
+              updatedAt: now,
             });
           }
         }

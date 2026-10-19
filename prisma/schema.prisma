@@ -35,6 +35,12 @@ model Instance {
   companyName  String   @map("company_name")
   siteName     String   @unique @map("site_name")
   hostname     String   @unique
+  customDomain String?  @unique @map("custom_domain")
+  customDomainVerificationToken String? @map("custom_domain_verification_token")
+  customDomainStatus String? @map("custom_domain_status")
+  customDomainCreatedAt DateTime? @map("custom_domain_created_at")
+  customDomainVerifiedAt DateTime? @map("custom_domain_verified_at")
+  customDomainError String? @map("custom_domain_error")
   status       String   @default("queued")
   errorMessage String?  @map("error_message")
   idempotencyKey String? @map("idempotency_key")

@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+import { domainToASCII } from 'node:url';
 import { ValidationError } from '../domain/errors.js';
 
 /**
@@ -104,11 +106,39 @@ export function buildHostname(slug: string, baseDomain: string): string {
       name: 'Choose a shorter company name',
     });
   }
+
   for (const label of hostname.split('.')) {
     if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(label) || label.length > 63) {
       throw new ValidationError('Generated hostname is invalid', {
         name: 'Choose a different company name',
       });
+    }
+  }
+  return hostname;
+}
+
+export function normalizeCustomDomain(input: string): string {
+  const value = input.trim().toLowerCase().replace(/\.$/, '');
+  if (!value || value.includes('://') || value.includes('/') || value.includes(':') || value.includes('*')) {
+    throw new ValidationError('Enter a hostname only, without a scheme, path, port, or wildcard');
+  }
+  const hostname = domainToASCII(value);
+  if (
+    !hostname ||
+    hostname.length > 253 ||
+    hostname.split('.').length < 2 ||
+    isIP(hostname) !== 0 ||
+    hostname.endsWith('.localhost') ||
+    hostname.endsWith('.local') ||
+    hostname.endsWith('.internal') ||
+    hostname.endsWith('.test') ||
+    hostname.endsWith('.example')
+  ) {
+    throw new ValidationError('Enter a valid public domain name');
+  }
+  for (const label of hostname.split('.')) {
+    if (label.length > 63 || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)) {
+      throw new ValidationError('Enter a valid public domain name');
     }
   }
   return hostname;

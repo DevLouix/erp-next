@@ -380,6 +380,56 @@ describe('restore onto another instance', () => {
     expect(instances[0]?.siteName).toBe('acme-corp.new.example.test');
   });
 
+  it('exports custom domains without verification tokens and imports them pending re-verification', async () => {
+    const source = await app();
+    const sourceAdmin = await loginAs(source, {
+      sub: 'root',
+      email: 'root@example.test',
+      role: 'platform-admin',
+    });
+    const alice = await loginAs(source, { sub: 'alice', email: 'alice@example.test' });
+    const created = await source.app.inject({
+      method: 'POST',
+      url: '/api/instances',
+      headers: { cookie: alice.cookie },
+      payload: createPayload('Acme Corp'),
+    });
+    const instanceId = created.json().instance.id as string;
+    await source.store.updateInstance(instanceId, {
+      customDomain: 'erp.acme.com',
+      customDomainVerificationToken: 'source-verification-token',
+      customDomainStatus: 'active',
+      customDomainCreatedAt: new Date('2026-01-01T00:00:00.000Z'),
+      customDomainVerifiedAt: new Date('2026-01-02T00:00:00.000Z'),
+    });
+
+    const snapshot = await exportSnapshot(source, sourceAdmin.cookie);
+    const snapshotInstance = (snapshot.instances as Array<Record<string, unknown>>)[0]!;
+    expect(snapshotInstance.customDomain).toBe('erp.acme.com');
+    expect(JSON.stringify(snapshot)).not.toContain('source-verification-token');
+
+    const target = await app();
+    const targetAdmin = await loginAs(target, {
+      sub: 'root',
+      email: 'root@example.test',
+      role: 'platform-admin',
+    });
+    const imported = await target.app.inject({
+      method: 'POST',
+      url: '/api/admin/backup/import',
+      headers: { cookie: targetAdmin.cookie },
+      payload: { snapshot, dryRun: false },
+    });
+
+    expect(imported.statusCode).toBe(200);
+    const restored = (await target.store.listAllInstances())[0]!;
+    expect(restored.customDomain).toBe('erp.acme.com');
+    expect(restored.customDomainStatus).toBe('pending');
+    expect(restored.customDomainVerificationToken).toBeTruthy();
+    expect(restored.customDomainVerificationToken).not.toBe('source-verification-token');
+    expect(restored.customDomainVerifiedAt).toBeNull();
+  });
+
   it('does not requeue a snapshot captured during permanent deletion', async () => {
     const source = await app();
     const sourceAdmin = await loginAs(source, {

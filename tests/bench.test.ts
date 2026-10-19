@@ -61,6 +61,26 @@ describe('BenchClient command construction', () => {
     expect(runner.calls[0]?.args).not.toContain('--mariadb-host');
   });
 
+  it('adds and removes custom domains using Bench domain commands', async () => {
+    const { client, runner } = makeClient();
+    await client.addDomain('acme.apps.example.test', 'erp.acme.com');
+    expect(runner.calls[0]?.args).toEqual([
+      'setup',
+      'add-domain',
+      'erp.acme.com',
+      '--site',
+      'acme.apps.example.test',
+    ]);
+    await client.removeDomain('acme.apps.example.test', 'erp.acme.com');
+    expect(runner.calls[1]?.args).toEqual([
+      'setup',
+      'remove-domain',
+      'erp.acme.com',
+      '--site',
+      'acme.apps.example.test',
+    ]);
+  });
+
   it('uses the supplied per-site Administrator password and redacts it from command errors', async () => {
     const { client, runner } = makeClient();
     runner.responses.push({

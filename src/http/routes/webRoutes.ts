@@ -26,6 +26,9 @@ const credentialsFormBody = z.object({
   message: 'Administrator passwords do not match',
   path: ['confirmAdminPassword'],
 });
+const customDomainFormBody = z.object({
+  domain: z.string().trim().min(1).max(253),
+});
 const updateFormBody = z.object({ name: z.string().trim().min(1).max(100) });
 const deleteFormBody = z.object({ confirmSiteName: z.string().min(1) });
 const siteBackupSettingsForm = z.object({
@@ -265,6 +268,7 @@ function layout(title: string, body: string, user?: User | null): string {
     .password-match[data-match="yes"] { color: #638266; }
     .password-match[data-match="no"] { color: var(--danger); }
     .password-generate { margin-top: .4rem; padding: .4rem .65rem !important; font-size: .82rem !important; }
+    .domain-record { overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 7px; padding: .65rem .8rem; background: var(--bg); font: .8rem/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
     input[aria-invalid="true"] { border-color: var(--danger); }
     button[type=submit], button.action, a.primary {
       display: inline-flex;
@@ -707,6 +711,58 @@ export function registerWebRoutes(
       latestJob?.type === 'credentials' && latestJob.status === 'failed';
     const credentialChangeSucceeded =
       latestJob?.type === 'credentials' && latestJob.status === 'succeeded';
+    const domainPending = ['configuring', 'removing'].includes(instance.customDomainStatus ?? '');
+    const customDomainPanel = ready
+      ? `<div class="card">
+        <h3>Custom domain</h3>
+        ${
+          instance.customDomain
+            ? `<p><strong>${escapeHtml(instance.customDomain)}</strong> · ${escapeHtml(instance.customDomainStatus ?? 'pending')}</p>
+              ${
+                instance.customDomainStatus === 'pending' || instance.customDomainStatus === 'failed'
+                  ? `<p>Add this ownership verification record before any traffic is routed to the workspace:</p>
+                    <p class="muted">TXT record</p>
+                    <div class="domain-record">Name: _erpnext-verification.${escapeHtml(instance.customDomain)}<br>Value: erpnext-domain-verification=${escapeHtml(instance.customDomainVerificationToken ?? '')}</div>
+                    <p>After the TXT record propagates, verify it here. The platform will add the hostname to this Frappe site before you publish a route.</p>
+                    <div class="actions">
+                      <form method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/domains/verify">
+                        <button class="action" type="submit">Verify DNS &amp; configure site</button>
+                      </form>
+                      <form method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/domains/remove" onsubmit="return confirm('Remove this custom domain?')">
+                        <button class="action secondary" type="submit">Cancel</button>
+                      </form>
+                    </div>`
+                  : ''
+              }
+              ${domainPending ? '<p class="muted" role="status">Updating Frappe domain routing… this page will refresh automatically.</p><script>setTimeout(function () { location.reload(); }, 4000);</script>' : ''}
+              ${instance.customDomainError ? `<p class="err-text" role="alert">${escapeHtml(instance.customDomainError)}</p>` : ''}
+              ${
+                instance.customDomainStatus === 'active'
+                  ? `<p>Frappe is configured for this hostname. To publish it:</p>
+                    <ol>
+                      <li>Add a CNAME for <strong>${escapeHtml(instance.customDomain)}</strong> pointing to <strong>${escapeHtml(instance.hostname)}</strong>.</li>
+                      <li>In Dokploy, add the domain to the Docker Compose app’s <strong>Domains</strong> tab and route it to <strong>frappe-frontend</strong> (port 8080), with HTTPS enabled using a valid certificate resolver.</li>
+                      <li>Wait for DNS and certificate issuance, then test the HTTPS URL.</li>
+                    </ol>
+                    <p><a class="primary" href="https://${escapeHtml(instance.customDomain)}" target="_blank" rel="noopener noreferrer">Open custom domain</a></p>
+                    <p class="muted">When disconnecting, remove the domain route in Dokploy and its DNS record first, then remove it here. This avoids sending an unassigned Host header to Frappe.</p>
+                    <form method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/domains/remove" onsubmit="return confirm('Remove this custom domain from the workspace?')">
+                      <button class="action secondary" type="submit">Remove custom domain</button>
+                    </form>`
+                  : instance.customDomainStatus === 'removing'
+                    ? `<form method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/domains/remove">
+                        <button class="action secondary" type="submit">Retry removal</button>
+                      </form>`
+                    : ''
+              }`
+            : `<p class="muted">Connect a domain you control to this ERPNext site. Use a subdomain such as <code>erp.example.com</code>.</p>
+              <form class="row" method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/domains">
+                <div><label for="customDomain">Custom hostname</label><input id="customDomain" type="text" name="domain" placeholder="erp.example.com" autocomplete="url" required></div>
+                <button class="action" type="submit">Add custom domain</button>
+              </form>`
+        }
+      </div>`
+      : '';
     const credentialsPanel = ready
       ? `<div class="card">
         <h3>ERPNext login</h3>
@@ -787,6 +843,7 @@ export function registerWebRoutes(
         ${poll}
       </div>`;
     const editableBody = `
+      ${customDomainPanel}
       ${credentialsPanel}
       <div class="card">
         <h3>Workspace settings</h3>
@@ -861,6 +918,48 @@ export function registerWebRoutes(
       await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}`, 303);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Could not update instance';
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}?error=${encodeURIComponent(message)}`, 303);
+    }
+  });
+
+  app.post('/dashboard/instances/:id/domains', { preHandler: requireAuth }, async (request, reply) => {
+    const { user } = getAuth(request);
+    const { id } = request.params as { id: string };
+    const parsed = customDomainFormBody.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      const message = parsed.error.issues[0]?.message ?? 'Enter a valid custom hostname';
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}?error=${encodeURIComponent(message)}`, 303);
+      return;
+    }
+    try {
+      await instanceService.addCustomDomain(user, id, parsed.data.domain);
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}`, 303);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not add custom domain';
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}?error=${encodeURIComponent(message)}`, 303);
+    }
+  });
+
+  app.post('/dashboard/instances/:id/domains/verify', { preHandler: requireAuth }, async (request, reply) => {
+    const { user } = getAuth(request);
+    const { id } = request.params as { id: string };
+    try {
+      await instanceService.verifyCustomDomain(user, id);
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}`, 303);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not verify custom domain';
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}?error=${encodeURIComponent(message)}`, 303);
+    }
+  });
+
+  app.post('/dashboard/instances/:id/domains/remove', { preHandler: requireAuth }, async (request, reply) => {
+    const { user } = getAuth(request);
+    const { id } = request.params as { id: string };
+    try {
+      await instanceService.removeCustomDomain(user, id);
+      await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}`, 303);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not remove custom domain';
       await reply.redirect(`/dashboard/instances/${encodeURIComponent(id)}?error=${encodeURIComponent(message)}`, 303);
     }
   });

@@ -1,10 +1,18 @@
 import { randomBytes } from 'node:crypto';
+import { resolveTxt } from 'node:dns/promises';
 import type { AppConfig } from '../config.js';
 import type { Store } from '../domain/store.js';
 import type { Instance, User } from '../domain/types.js';
 import { DuplicateError, ForbiddenError, NotFoundError, ValidationError } from '../domain/errors.js';
-import { deriveSiteNaming, type SiteNaming } from './validation.js';
+import { deriveSiteNaming, normalizeCustomDomain, type SiteNaming } from './validation.js';
 import { decryptCredential, encryptCredential } from '../admin/credentialEncryption.js';
+
+export interface CustomDomainDns {
+  resolveTxt(hostname: string): Promise<string[][]>;
+}
+
+const systemDns: CustomDomainDns = { resolveTxt };
+const CUSTOM_DOMAIN_CLAIM_TTL_MS = 48 * 60 * 60 * 1000;
 
 export interface CreateInstanceRequest {
   companyName: string;
@@ -16,6 +24,7 @@ export class InstanceService {
   constructor(
     private readonly store: Store,
     private readonly config: AppConfig,
+    private readonly dns: CustomDomainDns = systemDns,
   ) {}
 
   /**
@@ -150,10 +159,165 @@ export class InstanceService {
     return Boolean(credentials?.adminPasswordCiphertext);
   }
 
+  async addCustomDomain(user: User, instanceId: string, input: string): Promise<Instance> {
+    const instance = await this.getFor(user, instanceId);
+    if (instance.status !== 'ready') {
+      throw new ValidationError('Custom domains can only be added to a ready instance');
+    }
+    const now = new Date();
+    if (instance.customDomain) {
+      if (
+        instance.customDomainStatus === 'pending' &&
+        instance.customDomainCreatedAt &&
+        now.getTime() - instance.customDomainCreatedAt.getTime() >= CUSTOM_DOMAIN_CLAIM_TTL_MS
+      ) {
+        await this.clearCustomDomain(instanceId);
+      } else {
+        throw new ValidationError('Remove the current custom domain before adding another');
+      }
+    }
+    const domain = normalizeCustomDomain(input);
+    const platformDomain = this.config.PROVISIONING_BASE_DOMAIN.toLowerCase();
+    if (domain === instance.hostname || domain.endsWith(`.${platformDomain}`)) {
+      throw new ValidationError('Use a domain outside the platform-managed domain');
+    }
+    const hostnameOwner = await this.store.findInstanceByHostname(domain);
+    if (hostnameOwner) throw new ValidationError('This domain is already assigned to a workspace');
+    const domainOwner = await this.store.findInstanceByCustomDomain(domain);
+    if (domainOwner) {
+      const expiredClaim =
+        domainOwner.customDomainStatus === 'pending' &&
+        domainOwner.customDomainCreatedAt &&
+        now.getTime() - domainOwner.customDomainCreatedAt.getTime() >= CUSTOM_DOMAIN_CLAIM_TTL_MS;
+      if (!expiredClaim) throw new ValidationError('This domain is already assigned to a workspace');
+      await this.clearCustomDomain(domainOwner.id);
+    }
+
+    const token = randomBytes(24).toString('hex');
+    let updated: Instance;
+    try {
+      updated = await this.store.updateInstance(instanceId, {
+        customDomain: domain,
+        customDomainVerificationToken: token,
+        customDomainStatus: 'pending',
+        customDomainCreatedAt: now,
+        customDomainVerifiedAt: null,
+        customDomainError: null,
+      });
+    } catch (err) {
+      if (err instanceof DuplicateError) {
+        throw new ValidationError('This domain is already assigned to a workspace');
+      }
+      throw err;
+    }
+    await this.store.recordAudit({
+      actorUserId: user.id,
+      action: 'instance.custom_domain_added',
+      targetType: 'instance',
+      targetId: instanceId,
+      metadata: { domain },
+    });
+    return updated;
+  }
+
+  async verifyCustomDomain(user: User, instanceId: string): Promise<void> {
+    const instance = await this.getFor(user, instanceId);
+    if (instance.status !== 'ready' || !instance.customDomain || !instance.customDomainVerificationToken) {
+      throw new ValidationError('Add a custom domain to a ready workspace first');
+    }
+    if (!['pending', 'failed'].includes(instance.customDomainStatus ?? '')) {
+      throw new ValidationError('This custom domain cannot be verified in its current state');
+    }
+    if (
+      instance.customDomainStatus === 'pending' &&
+      instance.customDomainCreatedAt &&
+      Date.now() - instance.customDomainCreatedAt.getTime() >= CUSTOM_DOMAIN_CLAIM_TTL_MS
+    ) {
+      await this.clearCustomDomain(instanceId);
+      throw new ValidationError('The domain verification challenge expired. Add the domain again to get a new TXT value.');
+    }
+    const txtName = `_erpnext-verification.${instance.customDomain}`;
+    let txtRecords: string[][];
+    try {
+      txtRecords = await this.dns.resolveTxt(txtName);
+    } catch (err) {
+      const code = typeof err === 'object' && err !== null && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : '';
+      if (['ENODATA', 'ENOTFOUND', 'ENONAME', 'ESERVFAIL'].includes(code)) {
+        throw new ValidationError('The DNS TXT record is not visible yet. Check it and try again after propagation.');
+      }
+      throw new Error(`DNS verification lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const expectedTxt = `erpnext-domain-verification=${instance.customDomainVerificationToken}`;
+    if (!txtRecords.some((record) => record.join('') === expectedTxt)) {
+      throw new ValidationError(`The TXT record at ${txtName} does not match the verification value`);
+    }
+    try {
+      await this.store.queueCustomDomainJob(instanceId, {
+        customDomainStatus: 'configuring',
+        customDomainVerifiedAt: new Date(),
+        customDomainError: null,
+      }, this.config.PROVISION_MAX_ATTEMPTS);
+    } catch (err) {
+      if (err instanceof DuplicateError) {
+        throw new ValidationError('Another workspace operation is in progress; try again when it finishes');
+      }
+      throw err;
+    }
+    await this.store.recordAudit({
+      actorUserId: user.id,
+      action: 'instance.custom_domain_verified',
+      targetType: 'instance',
+      targetId: instanceId,
+      metadata: { domain: instance.customDomain },
+    });
+  }
+
+  async removeCustomDomain(user: User, instanceId: string): Promise<void> {
+    const instance = await this.getFor(user, instanceId);
+    if (instance.status !== 'ready' || !instance.customDomain) {
+      throw new ValidationError('This workspace has no custom domain to remove');
+    }
+    if (instance.customDomainStatus === 'pending') {
+      await this.clearCustomDomain(instanceId);
+    } else {
+      try {
+        await this.store.queueCustomDomainJob(instanceId, {
+          customDomainStatus: 'removing',
+          customDomainError: null,
+        }, this.config.PROVISION_MAX_ATTEMPTS);
+      } catch (err) {
+        if (err instanceof DuplicateError) {
+          throw new ValidationError('Another workspace operation is in progress; try again when it finishes');
+        }
+        throw err;
+      }
+    }
+    await this.store.recordAudit({
+      actorUserId: user.id,
+      action: 'instance.custom_domain_remove_requested',
+      targetType: 'instance',
+      targetId: instanceId,
+      metadata: { domain: instance.customDomain },
+    });
+  }
+
   private validateAdminPassword(password: string): void {
     if (password.length < 12 || password.length > 128) {
       throw new ValidationError('Administrator password must be between 12 and 128 characters');
     }
+  }
+
+  private async clearCustomDomain(instanceId: string): Promise<void> {
+    await this.store.updateInstance(instanceId, {
+      customDomain: null,
+      customDomainVerificationToken: null,
+      customDomainStatus: null,
+      customDomainCreatedAt: null,
+      customDomainVerifiedAt: null,
+      customDomainError: null,
+    });
   }
 
   private async chooseNaming(companyName: string): Promise<SiteNaming> {
@@ -212,6 +376,11 @@ export class InstanceService {
 
   async deleteFor(user: User, instanceId: string, confirmation: string): Promise<Instance> {
     const instance = await this.getFor(user, instanceId);
+    if (instance.customDomain) {
+      throw new ValidationError(
+        `Remove ${instance.customDomain} from the Dokploy route and DNS, then detach it here before deleting this workspace`,
+      );
+    }
     if (confirmation !== instance.hostname) {
       throw new ValidationError(`Type ${instance.hostname} exactly to confirm permanent deletion`);
     }

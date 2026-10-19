@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { randomBytes } from 'node:crypto';
 import type { AppConfig } from '../config.js';
 import type { Store } from '../domain/store.js';
 import type {
@@ -32,6 +33,7 @@ const snapshotInstanceSchema = z.object({
   companyName: z.string().optional(),
   siteName: z.string().min(1),
   hostname: z.string().min(1),
+  customDomain: z.string().nullable().optional(),
   status: z.enum(INSTANCE_STATUSES),
   errorMessage: z.string().nullable().optional().transform((v) => v ?? null),
   adminPasswordCiphertext: z.string().nullable().optional(),
@@ -106,6 +108,7 @@ export class BackupService {
           companyName: i.companyName,
           siteName: i.siteName,
           hostname: i.hostname,
+          customDomain: i.customDomain,
           status: i.status,
           errorMessage: i.errorMessage,
           ...(credentials?.adminPasswordCiphertext
@@ -277,6 +280,10 @@ export class BackupService {
             companyName: snapshotInstance.companyName,
             siteName: naming.siteName,
             hostname: naming.hostname,
+            customDomain: snapshotInstance.customDomain ?? null,
+            customDomainVerificationToken: snapshotInstance.customDomain
+              ? randomBytes(24).toString('hex')
+              : null,
             status: importedStatus,
             errorMessage: importedErrorMessage,
             adminPasswordCiphertext: snapshotInstance.adminPasswordCiphertext,
@@ -290,6 +297,10 @@ export class BackupService {
             companyName: snapshotInstance.companyName,
             siteName: naming.siteName,
             hostname: naming.hostname,
+            customDomain: snapshotInstance.customDomain ?? null,
+            customDomainVerificationToken: snapshotInstance.customDomain
+              ? randomBytes(24).toString('hex')
+              : null,
             status: importedStatus,
             errorMessage: importedErrorMessage,
             adminPasswordCiphertext: snapshotInstance.adminPasswordCiphertext,

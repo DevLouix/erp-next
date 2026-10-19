@@ -95,6 +95,45 @@ deploy in-cluster (Deployments/Services/Ingress + cert-manager or Traefik DNS-01
 or free the ports (recreate the cluster without the 80/443 load-balancer mapping)
 and use strategy 2. Ask if you want manifests scaffolded.
 
+## Custom domains for tenant sites
+
+Tenant custom domains require coordinated DNS ownership proof, a Frappe site
+alias, a Dokploy/Traefik host route, and a certificate. The platform handles the
+first two steps: an owner adds a domain to a ready instance, publishes its
+per-domain TXT token, and verifies it. The worker then uses Bench's
+`setup add-domain` command and probes Frappe with the custom Host header.
+Unverified hostnames are not added to Frappe.
+
+After the instance panel reports the Frappe alias is configured:
+
+1. Point the custom hostname to the instance's assigned hostname: use a CNAME
+   for a subdomain; for an apex/root domain, use the DNS provider's
+   ALIAS/ANAME or CNAME-flattening feature, or point an A/AAAA record at the
+   ingress.
+2. In the Dokploy Compose app's **Domains** tab, add the hostname and select
+   `frappe-frontend` on port `8080`. Enable HTTPS with a certificate resolver.
+   Dokploy generates the Traefik route; keep the original Host header intact.
+3. Test the exact `https://` hostname after DNS propagation and certificate
+   issuance. The platform's `active` status confirms Frappe alias setup, not
+   external proxy/TLS readiness.
+
+Use a certificate valid for the custom hostname. The platform wildcard
+certificate only covers its own `PROVISIONING_BASE_DOMAIN`. Traefik must be
+reachable on port 80 for HTTP-01; use DNS-01 when that is unavailable or when
+requesting a wildcard certificate. Persist Traefik's ACME storage and monitor
+renewal errors. Dokploy routing and certificate lifecycle are managed in
+Dokploy, not by the platform application.
+
+For safe removal, first remove the custom host route from Dokploy and its DNS
+record, then remove the domain in the instance panel. The worker removes the
+Frappe alias; the platform blocks instance deletion while a custom hostname is
+still attached. This avoids leaving an unassigned hostname routed to Frappe's
+default site.
+
+References: [Frappe Bench `add-domain`/`remove-domain`](https://github.com/frappe/bench/blob/develop/bench/commands/setup.py),
+[Dokploy Compose domains](https://docs.dokploy.com/docs/core/docker-compose/domains),
+[Traefik ACME](https://doc.traefik.io/traefik/reference/install-configuration/tls/certificate-resolvers/acme/).
+
 ## What the Dokploy overlay changes (and doesn't)
 
 The base `docker-compose.yml` is the manual default and keeps host ports and the

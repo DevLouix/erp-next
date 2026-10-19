@@ -720,10 +720,12 @@ export function registerWebRoutes(
             ? `<p><strong>${escapeHtml(instance.customDomain)}</strong> · ${escapeHtml(instance.customDomainStatus ?? 'pending')}</p>
               ${
                 instance.customDomainStatus === 'pending' || instance.customDomainStatus === 'failed'
-                  ? `<p>Add this ownership verification record before any traffic is routed to the workspace:</p>
+                  ? `<p>Add both DNS records below. The TXT record proves ownership; the CNAME points visitors to the platform ingress.</p>
                     <p class="muted">TXT record</p>
                     <div class="domain-record">Name: _erpnext-verification.${escapeHtml(instance.customDomain)}<br>Value: erpnext-domain-verification=${escapeHtml(instance.customDomainVerificationToken ?? '')}</div>
-                    <p>After the TXT record propagates, verify it here. The platform will add the hostname to this Frappe site before you publish a route.</p>
+                    <p class="muted">CNAME record (for subdomains)</p>
+                    <div class="domain-record">Name: ${escapeHtml(instance.customDomain)}<br>Target: ${escapeHtml(instance.hostname)}</div>
+                    <p>For a root/apex domain, use your DNS provider's ALIAS/ANAME or flattening feature, or A/AAAA records matching the ingress IPs (look them up from the assigned hostname). Use DNS-only mode rather than proxying through a CDN during verification. After DNS propagates, verify it here. The platform will configure Frappe, install the exact-host Traefik route, and request HTTPS automatically.</p>
                     <div class="actions">
                       <form method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/domains/verify">
                         <button class="action" type="submit">Verify DNS &amp; configure site</button>
@@ -738,14 +740,9 @@ export function registerWebRoutes(
               ${instance.customDomainError ? `<p class="err-text" role="alert">${escapeHtml(instance.customDomainError)}</p>` : ''}
               ${
                 instance.customDomainStatus === 'active'
-                  ? `<p>Frappe is configured for this hostname. To publish it:</p>
-                    <ol>
-                      <li>Add a CNAME for <strong>${escapeHtml(instance.customDomain)}</strong> pointing to <strong>${escapeHtml(instance.hostname)}</strong>.</li>
-                      <li>In Dokploy, add the domain to the Docker Compose app’s <strong>Domains</strong> tab and route it to <strong>frappe-frontend</strong> (port 8080), with HTTPS enabled using a valid certificate resolver.</li>
-                      <li>Wait for DNS and certificate issuance, then test the HTTPS URL.</li>
-                    </ol>
+                  ? `<p>Frappe and the ingress route are configured. Traefik will obtain and renew the HTTPS certificate automatically; allow a short time for issuance.</p>
                     <p><a class="primary" href="https://${escapeHtml(instance.customDomain)}" target="_blank" rel="noopener noreferrer">Open custom domain</a></p>
-                    <p class="muted">When disconnecting, remove the domain route in Dokploy and its DNS record first, then remove it here. This avoids sending an unassigned Host header to Frappe.</p>
+                    <p class="muted">To disconnect, remove the hostname here first. The platform removes its ingress route and Frappe alias; then remove the hostname's DNS record.</p>
                     <form method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/domains/remove" onsubmit="return confirm('Remove this custom domain from the workspace?')">
                       <button class="action secondary" type="submit">Remove custom domain</button>
                     </form>`

@@ -5,7 +5,7 @@ import { ProvisioningWorker, computeBackoffMs } from '../src/provisioning/worker
 import { silentLogger } from '../src/lib/logger.js';
 import { testConfig } from '../src/config.js';
 import type { Instance, User } from '../src/domain/types.js';
-import { FakeBench, FakeHealth } from './helpers/fakes.js';
+import { FakeBench, FakeDomainIngress, FakeHealth } from './helpers/fakes.js';
 import { encryptCredential } from '../src/admin/credentialEncryption.js';
 
 const config = testConfig();
@@ -37,12 +37,14 @@ function makeWorker(
   bench: FakeBench,
   health = new FakeHealth(),
   configOverride?: Partial<typeof config>,
+  domainIngress = new FakeDomainIngress(),
 ) {
   return new ProvisioningWorker({
     store,
     config: configOverride ? { ...config, ...configOverride } : config,
     bench,
     health,
+    domainIngress,
     logger: silentLogger,
   });
 }
@@ -179,6 +181,8 @@ describe('custom domain lifecycle', () => {
         const saved = await store.findInstanceById(instance.id);
         return [[`erpnext-domain-verification=${saved?.customDomainVerificationToken}`]];
       },
+      resolve4: async () => ['203.0.113.25'],
+      resolve6: async () => [],
     };
     service = new InstanceService(store, config, dns);
     await service.addCustomDomain(owner, instance.id, ' ERP.Acme.com. ');
@@ -189,7 +193,8 @@ describe('custom domain lifecycle', () => {
     expect(pending?.customDomainStatus).toBe('configuring');
     const bench = new FakeBench();
     const health = new FakeHealth();
-    const worker = makeWorker(bench, health);
+    const ingress = new FakeDomainIngress();
+    const worker = makeWorker(bench, health, undefined, ingress);
     await worker.processJob((await store.claimNextJob(new Date()))!);
 
     expect(bench.calls).toContainEqual({
@@ -197,10 +202,12 @@ describe('custom domain lifecycle', () => {
       args: [instance.siteName, 'erp.acme.com'],
     });
     expect(health.hosts).toContain('erp.acme.com');
+    expect(ingress.calls).toContainEqual({ op: 'configure', domain: 'erp.acme.com' });
     expect((await store.findInstanceById(instance.id))?.customDomainStatus).toBe('active');
 
     await service.removeCustomDomain(owner, instance.id);
     await worker.processJob((await store.claimNextJob(new Date()))!);
+    expect(ingress.calls).toContainEqual({ op: 'remove', domain: 'erp.acme.com' });
     expect(bench.calls).toContainEqual({
       op: 'remove-domain',
       args: [instance.siteName, 'erp.acme.com'],
@@ -215,9 +222,31 @@ describe('custom domain lifecycle', () => {
     await store.completeJob((await store.findLatestJobForInstance(instance.id))!.id);
     service = new InstanceService(store, config, {
       resolveTxt: async () => [['wrong-token']],
+      resolve4: async () => ['203.0.113.25'],
+      resolve6: async () => [],
     });
     await service.addCustomDomain(owner, instance.id, 'erp.acme.com');
     await expect(service.verifyCustomDomain(owner, instance.id)).rejects.toThrow('TXT record');
+    expect((await store.findLatestJobForInstance(instance.id))?.type).toBe('provision');
+    expect((await store.findInstanceById(instance.id))?.customDomainStatus).toBe('pending');
+  });
+
+  it('does not create Frappe jobs until the custom hostname points to this ingress', async () => {
+    const instance = await seed();
+    await store.updateInstance(instance.id, { status: 'ready' });
+    await store.completeJob((await store.findLatestJobForInstance(instance.id))!.id);
+    service = new InstanceService(store, config, {
+      resolveTxt: async () => {
+        const saved = await store.findInstanceById(instance.id);
+        return [[`erpnext-domain-verification=${saved?.customDomainVerificationToken}`]];
+      },
+      resolve4: async (hostname) => hostname === 'erp.acme.com'
+        ? ['198.51.100.20']
+        : ['203.0.113.25'],
+      resolve6: async () => [],
+    });
+    await service.addCustomDomain(owner, instance.id, 'erp.acme.com');
+    await expect(service.verifyCustomDomain(owner, instance.id)).rejects.toThrow('same ingress');
     expect((await store.findLatestJobForInstance(instance.id))?.type).toBe('provision');
     expect((await store.findInstanceById(instance.id))?.customDomainStatus).toBe('pending');
   });
@@ -234,6 +263,8 @@ describe('custom domain lifecycle', () => {
         const saved = await store.findInstanceById(instance.id);
         return [[`erpnext-domain-verification=${saved?.customDomainVerificationToken}`]];
       },
+      resolve4: async () => ['203.0.113.25'],
+      resolve6: async () => [],
     });
     await service.addCustomDomain(owner, instance.id, 'erp.acme.com');
     await service.verifyCustomDomain(owner, instance.id);
@@ -253,7 +284,7 @@ describe('custom domain lifecycle', () => {
     await store.completeJob((await store.findLatestJobForInstance(instance.id))!.id);
     await service.addCustomDomain(owner, instance.id, 'erp.acme.com');
     await expect(service.deleteFor(owner, instance.id, instance.hostname))
-      .rejects.toThrow('Remove erp.acme.com from the Dokploy route and DNS');
+      .rejects.toThrow('Detach erp.acme.com here and remove its DNS record');
     expect((await store.findLatestJobForInstance(instance.id))?.type).toBe('provision');
   });
 });
@@ -544,6 +575,7 @@ describe('worker recovery', () => {
       config: { ...config, PROVISION_LOCK_TIMEOUT_MS: 1_000 },
       bench,
       health: new FakeHealth(),
+      domainIngress: new FakeDomainIngress(),
       logger: silentLogger,
       now: () => new Date(Date.now() + 10_000),
     });

@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { resolveTxt } from 'node:dns/promises';
+import { resolve4, resolve6, resolveTxt } from 'node:dns/promises';
 import type { AppConfig } from '../config.js';
 import type { Store } from '../domain/store.js';
 import type { Instance, User } from '../domain/types.js';
@@ -9,9 +9,11 @@ import { decryptCredential, encryptCredential } from '../admin/credentialEncrypt
 
 export interface CustomDomainDns {
   resolveTxt(hostname: string): Promise<string[][]>;
+  resolve4(hostname: string): Promise<string[]>;
+  resolve6(hostname: string): Promise<string[]>;
 }
 
-const systemDns: CustomDomainDns = { resolveTxt };
+const systemDns: CustomDomainDns = { resolveTxt, resolve4, resolve6 };
 const CUSTOM_DOMAIN_CLAIM_TTL_MS = 48 * 60 * 60 * 1000;
 
 export interface CreateInstanceRequest {
@@ -253,6 +255,7 @@ export class InstanceService {
     if (!txtRecords.some((record) => record.join('') === expectedTxt)) {
       throw new ValidationError(`The TXT record at ${txtName} does not match the verification value`);
     }
+    await this.assertDomainRoutesToWorkspace(instance.customDomain, instance.hostname);
     try {
       await this.store.queueCustomDomainJob(instanceId, {
         customDomainStatus: 'configuring',
@@ -272,6 +275,41 @@ export class InstanceService {
       targetId: instanceId,
       metadata: { domain: instance.customDomain },
     });
+  }
+
+  private async assertDomainRoutesToWorkspace(domain: string, hostname: string): Promise<void> {
+    const [domainAddresses, hostnameAddresses] = await Promise.all([
+      this.resolveAddresses(domain),
+      this.resolveAddresses(hostname),
+    ]);
+    if (domainAddresses.length === 0) {
+      throw new ValidationError('The custom hostname does not resolve to an ingress address yet. Add the CNAME/A record and try again after DNS propagation.');
+    }
+    if (hostnameAddresses.length === 0) {
+      throw new Error(`The assigned platform hostname ${hostname} does not resolve to an ingress address`);
+    }
+    const domainSet = [...new Set(domainAddresses)].sort();
+    const hostnameSet = [...new Set(hostnameAddresses)].sort();
+    if (domainSet.length !== hostnameSet.length || domainSet.some((address, index) => address !== hostnameSet[index])) {
+      throw new ValidationError(`DNS for ${domain} must resolve to the same ingress as ${hostname}. Disable DNS proxying and check its CNAME or A/AAAA target.`);
+    }
+  }
+
+  private async resolveAddresses(hostname: string): Promise<string[]> {
+    const addresses: string[] = [];
+    for (const resolve of [this.dns.resolve4, this.dns.resolve6]) {
+      try {
+        addresses.push(...await resolve(hostname));
+      } catch (err) {
+        const code = typeof err === 'object' && err !== null && 'code' in err
+          ? String((err as { code: unknown }).code)
+          : '';
+        if (!['ENODATA', 'ENOTFOUND', 'ENONAME'].includes(code)) {
+          throw new Error(`DNS routing lookup failed for ${hostname}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+    return addresses;
   }
 
   async removeCustomDomain(user: User, instanceId: string): Promise<void> {
@@ -378,7 +416,7 @@ export class InstanceService {
     const instance = await this.getFor(user, instanceId);
     if (instance.customDomain) {
       throw new ValidationError(
-        `Remove ${instance.customDomain} from the Dokploy route and DNS, then detach it here before deleting this workspace`,
+        `Detach ${instance.customDomain} here and remove its DNS record before deleting this workspace`,
       );
     }
     if (confirmation !== instance.hostname) {

@@ -6,6 +6,7 @@ import { ExecFileRunner } from './provisioning/commands.js';
 import { BenchClient } from './provisioning/bench.js';
 import { waitForHealthy } from './provisioning/health.js';
 import { ProvisioningWorker, type HealthWaiter } from './provisioning/worker.js';
+import { TraefikFileIngress } from './provisioning/domainIngress.js';
 import { consoleLogger } from './lib/logger.js';
 
 async function main(): Promise<void> {
@@ -32,7 +33,16 @@ async function main(): Promise<void> {
       }),
   };
 
-  const worker = new ProvisioningWorker({ store, config, bench, health, logger: consoleLogger });
+  const domainIngress = config.CUSTOM_DOMAIN_INGRESS_MODE === 'traefik-file'
+    ? new TraefikFileIngress({
+        routesDir: config.CUSTOM_DOMAIN_ROUTES_DIR,
+        upstreamUrl: config.CUSTOM_DOMAIN_UPSTREAM_URL,
+        certResolver: config.CUSTOM_DOMAIN_CERT_RESOLVER,
+        httpEntryPoint: config.CUSTOM_DOMAIN_HTTP_ENTRYPOINT,
+        httpsEntryPoint: config.CUSTOM_DOMAIN_HTTPS_ENTRYPOINT,
+      })
+    : undefined;
+  const worker = new ProvisioningWorker({ store, config, bench, health, domainIngress, logger: consoleLogger });
 
   const shutdown = (signal: string) => {
     consoleLogger.info({ signal }, 'stopping worker');

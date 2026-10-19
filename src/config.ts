@@ -71,6 +71,12 @@ const envSchema = z.object({
   //   best-effort — log and continue; the health check is the real gate
   //   skip        — do not regenerate nginx at all
   PROVISION_ROUTING_MODE: z.enum(['strict', 'best-effort', 'skip']).default('best-effort'),
+  CUSTOM_DOMAIN_INGRESS_MODE: z.enum(['disabled', 'traefik-file']).default('disabled'),
+  CUSTOM_DOMAIN_ROUTES_DIR: z.string().min(1).default('/var/lib/erpnext/custom-domain-routes'),
+  CUSTOM_DOMAIN_UPSTREAM_URL: z.string().url().default('http://frappe-frontend:8080'),
+  CUSTOM_DOMAIN_CERT_RESOLVER: z.string().regex(/^[A-Za-z0-9_-]+$/).default('letsencrypt'),
+  CUSTOM_DOMAIN_HTTP_ENTRYPOINT: z.string().regex(/^[A-Za-z0-9_-]+$/).default('web'),
+  CUSTOM_DOMAIN_HTTPS_ENTRYPOINT: z.string().regex(/^[A-Za-z0-9_-]+$/).default('websecure'),
   WORKER_POLL_INTERVAL_MS: intString(3000),
   HEALTHCHECK_TIMEOUT_MS: intString(120_000),
   HEALTHCHECK_INTERVAL_MS: intString(5000),

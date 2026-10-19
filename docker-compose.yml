@@ -90,16 +90,20 @@ services:
       MARIADB_HOST: frappe-db
       PROVISION_ROUTING_MODE: ${PROVISION_ROUTING_MODE:-skip}
       HEALTHCHECK_BASE_URL: http://frappe-frontend:8080
+      CUSTOM_DOMAIN_ROUTES_DIR: /var/lib/erpnext/custom-domain-routes
     volumes:
       - frappe-sites:/home/frappe/frappe-bench/sites
       - frappe-logs:/home/frappe/frappe-bench/logs
       - frappe-backups:/home/frappe/frappe-bench/archived-backups
+      - custom-domain-routes:/var/lib/erpnext/custom-domain-routes
     depends_on:
       platform-postgres:
         condition: service_healthy
       frappe-configurator:
         condition: service_completed_successfully
       frappe-backup-volume-init:
+        condition: service_completed_successfully
+      custom-domain-routes-volume-init:
         condition: service_completed_successfully
 
   frappe-backup-volume-init:
@@ -111,6 +115,16 @@ services:
       - mkdir -p /backup && chown -R 1000:0 /backup && chmod 2770 /backup
     volumes:
       - frappe-backups:/backup
+
+  custom-domain-routes-volume-init:
+    image: frappe/erpnext:${ERPNEXT_VERSION:-v16.51.1}
+    user: root
+    restart: "no"
+    entrypoint: [bash, -c]
+    command:
+      - mkdir -p /routes && chown -R 1000:0 /routes && chmod 2770 /routes
+    volumes:
+      - custom-domain-routes:/routes
 
   # ── Frappe Bench (adapted from frappe_docker pwd.yml) ───────────────────
   frappe-backend:
@@ -289,6 +303,8 @@ volumes:
   frappe-sites:
   frappe-logs:
   frappe-backups:
+  custom-domain-routes:
+    name: ${CUSTOM_DOMAIN_ROUTES_VOLUME:-erpnext-custom-domain-routes}
 
 networks:
   erpnext:

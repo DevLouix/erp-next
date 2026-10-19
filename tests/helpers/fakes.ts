@@ -8,6 +8,7 @@ import type { ProvisioningBench } from '../../src/provisioning/worker.js';
 import type { HealthWaiter } from '../../src/provisioning/worker.js';
 import type { SiteBackupPart } from '../../src/domain/types.js';
 import type { SiteBackupSettings } from '../../src/domain/types.js';
+import type { DomainIngress } from '../../src/provisioning/domainIngress.js';
 
 /** A scriptable stand-in for Truemoi that never touches the network. */
 export class FakeIdentityProvider implements IdentityProvider {
@@ -170,5 +171,20 @@ export class FakeHealth implements HealthWaiter {
     this.attempts += 1;
     this.hosts.push(hostname);
     if (this.attempts <= this.failTimes) throw new Error(`site ${hostname} not healthy yet`);
+  }
+}
+
+export class FakeDomainIngress implements DomainIngress {
+  calls: Array<{ op: 'configure' | 'remove'; domain: string }> = [];
+  failOn: Set<'configure' | 'remove'> = new Set();
+
+  async configure(domain: string): Promise<void> {
+    this.calls.push({ op: 'configure', domain });
+    if (this.failOn.has('configure')) throw new Error('Traefik route configure failed');
+  }
+
+  async remove(domain: string): Promise<void> {
+    this.calls.push({ op: 'remove', domain });
+    if (this.failOn.has('remove')) throw new Error('Traefik route remove failed');
   }
 }

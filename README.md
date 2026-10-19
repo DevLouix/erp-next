@@ -284,45 +284,37 @@ Permanent deletion transitions through `deleting`.
   not rotate it without a credential migration.
 
 - A ready instance can claim one custom hostname from its **Custom domain**
-  panel. The platform first requires a tenant-specific TXT ownership proof, then
-  queues Bench's supported `bench setup add-domain` command and checks Frappe's
-  internal ping using that Host header. Only after the Frappe alias is active
-  should the owner publish a CNAME and add a matching Dokploy route. The
+  panel. The owner publishes a tenant-specific TXT proof and a CNAME to the
+  assigned platform hostname. The worker verifies ownership, configures the
+  Frappe alias, then publishes an exact-host Traefik route through the watched
+  file provider. Traefik obtains and renews HTTPS certificates. The
   hostname-to-tenant mapping is unique; deleting an instance is blocked until
   its custom domain has been detached.
 
 ### Custom domains on Dokploy
 
-Custom-domain onboarding is deliberately split between the platform and the
-edge proxy; the platform does not have access to Dokploy's Traefik control plane.
+Custom domains are routed automatically without the Dokploy API. The platform
+worker writes exact-host routes to a watched Traefik file-provider directory.
+This requires one-time host-level Traefik setup; see
+[Custom-domain ingress on Dokploy](./docs/deployment.md#custom-domains-for-tenant-sites).
 
 1. In the instance's **Custom domain** panel, enter a hostname you control.
-2. Add the displayed TXT record at `_erpnext-verification.<custom-hostname>`.
-   Click **Verify DNS & configure site** only after the record is visible. This
-   proves control before Frappe is taught to accept the hostname.
-3. Wait for the panel to report that Frappe is configured. Then point the custom
-   hostname to the instance's assigned hostname: use a CNAME for a subdomain;
-   for an apex/root domain, use your DNS provider's ALIAS/ANAME or CNAME-flattening
-   feature, or point an A/AAAA record at the ingress.
-4. In the Dokploy Compose app's **Domains** tab, add the custom hostname and
-   route it to `frappe-frontend` on port `8080`. Enable HTTPS with a certificate
-   resolver that can issue a certificate for that exact hostname. Dokploy's
-   routing must preserve the original `Host` header. The existing wildcard
-   certificate for `PROVISIONING_BASE_DOMAIN` does not cover unrelated custom
-   domains; use a domain-specific certificate (ordinary HTTP-01 is sufficient
-   for a non-wildcard hostname when port 80 reaches Traefik, otherwise use a
-   DNS-01 resolver).
-5. Wait for DNS propagation and certificate issuance, then test
-   `https://<custom-hostname>`. The platform's `active` state means the Frappe
-   alias is configured; the customer still needs to complete the Dokploy and
-   TLS steps.
+2. Publish the displayed TXT ownership record and CNAME to the assigned
+   platform hostname. For an apex/root domain, use an ALIAS/ANAME/CNAME-flattening
+   record or A/AAAA records matching the ingress IPs (look them up from the
+   assigned hostname). Use DNS-only mode rather than proxying through a CDN
+   during verification.
+3. Click **Verify DNS & configure site** after the records propagate. The
+   platform verifies the TXT proof, configures the Frappe alias, installs the
+   exact-host Traefik route, and requests a certificate from its configured
+   resolver.
+4. Wait for DNS and certificate issuance, then test
+   `https://<custom-hostname>`. Traefik must be reachable on ports 80/443 and
+   have persistent ACME storage.
 
-To detach a hostname safely, first remove its Dokploy route and DNS record, then
-use **Remove custom domain** in the instance panel. The worker removes the
-Frappe alias before the hostname can be reused. Do not leave a custom-domain
-route pointed at the shared Frappe frontend after detaching it: unmatched Host
-headers can resolve to Frappe's default site. The platform does not automate
-Dokploy's domain configuration or certificate lifecycle.
+To detach a hostname, use **Remove custom domain**. The worker removes the
+Traefik route before the Frappe alias; then remove the hostname's DNS record.
+Unknown hostnames never match a catch-all tenant route.
 
 ## Reverse proxy, DNS and TLS
 

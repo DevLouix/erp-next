@@ -20,7 +20,8 @@ export type InstanceStatus = (typeof INSTANCE_STATUSES)[number];
 export const JOB_STATUSES = ['queued', 'running', 'succeeded', 'failed'] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
-export type JobType = 'provision' | 'delete' | 'backup' | 'credentials';
+export type JobType = 'provision' | 'delete' | 'backup' | 'credentials' | 'domain';
+export type CustomDomainStatus = 'pending' | 'configuring' | 'active' | 'failed' | 'removing';
 
 export const USER_ROLES = ['user', 'admin'] as const;
 export type UserRole = (typeof USER_ROLES)[number];
@@ -42,6 +43,12 @@ export interface Instance {
   companyName: string;
   siteName: string;
   hostname: string;
+  customDomain: string | null;
+  customDomainVerificationToken: string | null;
+  customDomainStatus: CustomDomainStatus | null;
+  customDomainCreatedAt: Date | null;
+  customDomainVerifiedAt: Date | null;
+  customDomainError: string | null;
   status: InstanceStatus;
   errorMessage: string | null;
   idempotencyKey: string | null;
@@ -121,6 +128,8 @@ export interface ImportInstanceInput {
   companyName: string;
   siteName: string;
   hostname: string;
+  customDomain?: string | null;
+  customDomainVerificationToken?: string | null;
   status: InstanceStatus;
   errorMessage: string | null;
   adminPasswordCiphertext?: string | null;
@@ -170,7 +179,7 @@ export interface EncryptedSiteBackupCredentials {
 
 // ── Backups ────────────────────────────────────────────────────────────────
 
-export const BACKUP_SCHEMA_VERSION = 3;
+export const BACKUP_SCHEMA_VERSION = 4;
 
 export interface SnapshotUser {
   id: string;
@@ -188,6 +197,7 @@ export interface SnapshotInstance {
   companyName: string;
   siteName: string;
   hostname: string;
+  customDomain?: string | null;
   status: InstanceStatus;
   errorMessage: string | null;
   adminPasswordCiphertext?: string | null;

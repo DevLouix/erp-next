@@ -12,6 +12,8 @@ export interface ProvisioningBench {
   setAdminPassword(siteName: string, password: string): Promise<void>;
   ensureAppInstalled(siteName: string, app: string): Promise<void>;
   setHostname(siteName: string, hostname: string): Promise<void>;
+  addDomain(siteName: string, domain: string): Promise<void>;
+  removeDomain(siteName: string, domain: string): Promise<void>;
   configureRouting(): Promise<void>;
   dropSite(siteName: string): Promise<unknown>;
   backupSite(siteName: string): Promise<SiteBackupPart[]>;
@@ -138,6 +140,7 @@ export class ProvisioningWorker {
     if (job.type === 'delete') return this.processDeleteJob(job, instance);
     if (job.type === 'backup') return this.processBackupJob(job, instance);
     if (job.type === 'credentials') return this.processCredentialJob(job, instance);
+    if (job.type === 'domain') return this.processCustomDomainJob(job, instance);
 
     if (instance.status === 'ready') {
       await this.deps.store.completeJob(job.id);
@@ -243,6 +246,59 @@ export class ProvisioningWorker {
         job.id,
         instance.id,
         claim,
+        exhausted,
+        new Date(this.now().getTime() + computeBackoffMs(job.attempts)),
+        message,
+      );
+      if (!recorded) return 'skipped';
+      return exhausted ? 'failed' : 'retry';
+    }
+  }
+
+  private async processCustomDomainJob(
+    job: ProvisioningJob,
+    instance: Instance,
+  ): Promise<JobOutcome> {
+    if (!job.lockedAt || !(await this.isJobRunning(job))) return 'skipped';
+    const isRemoval = instance.customDomainStatus === 'removing';
+    const domain = instance.customDomain;
+    const log = { jobId: job.id, instanceId: instance.id, hostname: instance.hostname, domain, attempt: job.attempts };
+    try {
+      if (!domain || (!isRemoval && instance.customDomainStatus !== 'configuring')) {
+        throw new Error('Custom domain operation is missing its pending domain');
+      }
+      if (isRemoval) {
+        await this.deps.bench.removeDomain(instance.siteName, domain);
+      } else {
+        await this.deps.bench.addDomain(instance.siteName, domain);
+      }
+      if (!(await this.isJobRunning(job))) return 'skipped';
+      await this.deps.health.waitForHealthy(isRemoval ? instance.hostname : domain);
+      const completed = await this.deps.store.completeCustomDomainJob(
+        job.id,
+        instance.id,
+        { attempts: job.attempts, lockedAt: job.lockedAt },
+        isRemoval,
+      );
+      if (!completed) return 'skipped';
+      await this.deps.store.recordAudit({
+        actorUserId: null,
+        action: isRemoval ? 'instance.custom_domain_removed' : 'instance.custom_domain_configured',
+        targetType: 'instance',
+        targetId: instance.id,
+        metadata: { domain },
+      });
+      this.logger.info(log, isRemoval ? 'custom domain removed' : 'custom domain configured');
+      return 'ready';
+    } catch (err) {
+      if (!(await this.isJobRunning(job))) return 'skipped';
+      const message = this.sanitizeError(err);
+      const exhausted = job.attempts >= job.maxAttempts;
+      this.logger.error({ ...log, error: message }, 'custom domain operation failed');
+      const recorded = await this.deps.store.recordCustomDomainFailure(
+        job.id,
+        instance.id,
+        { attempts: job.attempts, lockedAt: job.lockedAt },
         exhausted,
         new Date(this.now().getTime() + computeBackoffMs(job.attempts)),
         message,

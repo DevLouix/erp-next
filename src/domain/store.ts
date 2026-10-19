@@ -55,6 +55,7 @@ export interface Store {
   ): Promise<Instance | null>;
   findInstanceBySiteName(siteName: string): Promise<Instance | null>;
   findInstanceByHostname(hostname: string): Promise<Instance | null>;
+  findInstanceByCustomDomain(domain: string): Promise<Instance | null>;
   findInstanceCredentials(instanceId: string): Promise<EncryptedInstanceCredentials | null>;
   queueInstanceCredentialChange(
     instanceId: string,
@@ -65,8 +66,37 @@ export interface Store {
   listAllInstances(): Promise<Instance[]>;
   updateInstance(
     id: string,
-    patch: Partial<{ companyName: string; status: InstanceStatus; errorMessage: string | null }>,
+    patch: Partial<{
+      companyName: string;
+      status: InstanceStatus;
+      errorMessage: string | null;
+      customDomain: string | null;
+      customDomainVerificationToken: string | null;
+      customDomainStatus: Instance['customDomainStatus'];
+      customDomainCreatedAt: Date | null;
+      customDomainVerifiedAt: Date | null;
+      customDomainError: string | null;
+    }>,
   ): Promise<Instance>;
+  queueCustomDomainJob(
+    instanceId: string,
+    patch: Partial<Pick<Instance, 'customDomainStatus' | 'customDomainVerifiedAt' | 'customDomainError'>>,
+    maxAttempts: number,
+  ): Promise<ProvisioningJob>;
+  completeCustomDomainJob(
+    jobId: string,
+    instanceId: string,
+    claim: { attempts: number; lockedAt: Date },
+    removing: boolean,
+  ): Promise<boolean>;
+  recordCustomDomainFailure(
+    jobId: string,
+    instanceId: string,
+    claim: { attempts: number; lockedAt: Date },
+    exhausted: boolean,
+    nextRunAt: Date,
+    error: string,
+  ): Promise<boolean>;
   queueInstanceDeletion(instanceId: string, maxAttempts: number): Promise<ProvisioningJob>;
   stopProvisioning(instanceId: string, error: string): Promise<boolean>;
   deleteInstance(id: string): Promise<void>;

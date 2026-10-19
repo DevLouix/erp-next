@@ -6,7 +6,7 @@ import type { Store } from './domain/store.js';
 import { AuthService } from './auth/authService.js';
 import type { IdentityProvider } from './auth/identityProvider.js';
 import { registerAuthDecorators, registerAuthHook, registerOriginCheck } from './auth/middleware.js';
-import { InstanceService } from './instances/instanceService.js';
+import { InstanceService, type CustomDomainDns } from './instances/instanceService.js';
 import { AdminService } from './admin/adminService.js';
 import { BackupService } from './admin/backupService.js';
 import { SiteBackupService } from './admin/siteBackupService.js';
@@ -20,6 +20,7 @@ export interface AppDeps {
   config: AppConfig;
   store: Store;
   identity: IdentityProvider;
+  domainDns?: CustomDomainDns;
 }
 
 export interface AppContext {
@@ -47,7 +48,7 @@ export async function buildApp(deps: AppDeps): Promise<AppContext> {
   await app.register(formbody);
 
   const authService = new AuthService(store, config, identity);
-  const instanceService = new InstanceService(store, config);
+  const instanceService = new InstanceService(store, config, deps.domainDns);
   const adminService = new AdminService(store, instanceService, config);
   const backupService = new BackupService(store, config);
   const siteBackupService = new SiteBackupService(store, instanceService, config);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildHostname, deriveSiteNaming, slugify } from '../src/instances/validation.js';
+import { buildHostname, deriveSiteNaming, normalizeCustomDomain, slugify } from '../src/instances/validation.js';
 import { ValidationError } from '../src/domain/errors.js';
 
 describe('slugify', () => {
@@ -41,5 +41,25 @@ describe('deriveSiteNaming', () => {
 describe('buildHostname', () => {
   it('rejects an empty base domain', () => {
     expect(() => buildHostname('acme', '')).toThrow(ValidationError);
+  });
+
+  describe('normalizeCustomDomain', () => {
+    it('normalizes case and internationalized hostnames to DNS form', () => {
+      expect(normalizeCustomDomain(' ERP.Example.COM. ')).toBe('erp.example.com');
+      expect(normalizeCustomDomain('café.example.com')).toBe('xn--caf-dma.example.com');
+    });
+
+    it('rejects URLs, wildcards, IP addresses, local names, and malformed labels', () => {
+      for (const value of [
+        'https://erp.example.com',
+        '*.example.com',
+        '127.0.0.1',
+        'erp.localhost',
+        'bad..example.com',
+        '-bad.example.com',
+      ]) {
+        expect(() => normalizeCustomDomain(value)).toThrow(ValidationError);
+      }
+    });
   });
 });

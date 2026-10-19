@@ -118,6 +118,18 @@ export class BenchClient {
     this.assertOk(result, `Configuring hostname for ${siteName}`);
   }
 
+  /** Add a verified custom hostname using Bench's supported alias command. */
+  async addDomain(siteName: string, domain: string): Promise<void> {
+    const result = await this.bench(['setup', 'add-domain', domain, '--site', siteName]);
+    this.assertOk(result, `Adding custom domain ${domain} to ${siteName}`);
+  }
+
+  /** Remove a custom hostname using Bench's supported alias command. */
+  async removeDomain(siteName: string, domain: string): Promise<void> {
+    const result = await this.bench(['setup', 'remove-domain', domain, '--site', siteName]);
+    this.assertOk(result, `Removing custom domain ${domain} from ${siteName}`);
+  }
+
   /** Regenerate nginx configuration; the deployment's ingress owns reloads. */
   async configureRouting(): Promise<void> {
     const setup = await this.bench(['setup', 'nginx']);

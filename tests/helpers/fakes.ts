@@ -112,6 +112,16 @@ export class FakeBench implements ProvisioningBench {
     this.maybeFail('setHostname');
   }
 
+  async addDomain(siteName: string, domain: string): Promise<void> {
+    this.calls.push({ op: 'add-domain', args: [siteName, domain] });
+    this.maybeFail('addDomain');
+  }
+
+  async removeDomain(siteName: string, domain: string): Promise<void> {
+    this.calls.push({ op: 'remove-domain', args: [siteName, domain] });
+    this.maybeFail('removeDomain');
+  }
+
   async configureRouting(): Promise<void> {
     this.calls.push({ op: 'configure-routing', args: [] });
     this.maybeFail('configureRouting');
@@ -153,10 +163,12 @@ export class FakeBench implements ProvisioningBench {
 /** Health checker that succeeds after `failTimes` attempts. */
 export class FakeHealth implements HealthWaiter {
   attempts = 0;
+  hosts: string[] = [];
   constructor(private readonly failTimes = 0) {}
 
   async waitForHealthy(hostname: string): Promise<void> {
     this.attempts += 1;
+    this.hosts.push(hostname);
     if (this.attempts <= this.failTimes) throw new Error(`site ${hostname} not healthy yet`);
   }
 }

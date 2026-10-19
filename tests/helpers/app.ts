@@ -3,6 +3,7 @@ import type { UserInfo } from '@truemoi/sdk';
 import { buildApp } from '../../src/app.js';
 import { testConfig, type AppConfig } from '../../src/config.js';
 import { MemoryStore } from '../../src/domain/memoryStore.js';
+import type { CustomDomainDns } from '../../src/instances/instanceService.js';
 import { FakeIdentityProvider } from './fakes.js';
 
 export interface TestApp {
@@ -12,11 +13,14 @@ export interface TestApp {
   config: AppConfig;
 }
 
-export async function makeTestApp(overrides: Partial<AppConfig> = {}): Promise<TestApp> {
+export async function makeTestApp(
+  overrides: Partial<AppConfig> = {},
+  domainDns?: CustomDomainDns,
+): Promise<TestApp> {
   const config = testConfig(overrides);
   const store = new MemoryStore();
   const identity = new FakeIdentityProvider();
-  const { app } = await buildApp({ config, store, identity });
+  const { app } = await buildApp({ config, store, identity, domainDns });
   await app.ready();
   return { app, store, identity, config };
 }

@@ -28,6 +28,9 @@ const credentialsBody = z.object({
   message: 'Administrator passwords do not match',
   path: ['confirmAdminPassword'],
 });
+const customDomainBody = z.object({
+  domain: z.string().trim().min(1).max(253),
+});
 
 export function registerInstanceRoutes(
   app: FastifyInstance,
@@ -69,6 +72,34 @@ export function registerInstanceRoutes(
     const body = credentialsBody.parse(request.body ?? {});
     await instanceService.changeLoginPassword(user, id, body.adminPassword);
     reply.code(202).header('cache-control', 'no-store, private').send({ status: 'queued' });
+  });
+
+  app.post('/api/instances/:id/domains', { preHandler: requireAuth }, async (request, reply) => {
+    const { user } = getAuth(request);
+    const { id } = request.params as { id: string };
+    const body = customDomainBody.parse(request.body ?? {});
+    const instance = await instanceService.addCustomDomain(user, id, body.domain);
+    reply.code(201).send({
+      instance: serializeInstance(instance, config),
+      dnsVerification: {
+        txtName: `_erpnext-verification.${instance.customDomain}`,
+        txtValue: `erpnext-domain-verification=${instance.customDomainVerificationToken}`,
+      },
+    });
+  });
+
+  app.post('/api/instances/:id/domains/verify', { preHandler: requireAuth }, async (request, reply) => {
+    const { user } = getAuth(request);
+    const { id } = request.params as { id: string };
+    await instanceService.verifyCustomDomain(user, id);
+    reply.code(202).send({ status: 'configuring' });
+  });
+
+  app.delete('/api/instances/:id/domains', { preHandler: requireAuth }, async (request, reply) => {
+    const { user } = getAuth(request);
+    const { id } = request.params as { id: string };
+    await instanceService.removeCustomDomain(user, id);
+    reply.code(202).send({ status: 'removing' });
   });
 
   app.get('/api/instances', { preHandler: requireAuth }, async (request, reply) => {

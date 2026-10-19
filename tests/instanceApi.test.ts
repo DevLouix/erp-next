@@ -349,3 +349,29 @@ describe('POST /api/instances', () => {
     expect(restrictedConfig.statusCode).toBe(404);
   });
 });
+
+describe('custom-domain DNS instructions', () => {
+  it('returns the assigned hostname as the custom-domain CNAME target', async () => {
+    ctx = await makeTestApp();
+    const { cookie } = await loginAs(ctx, { sub: 'owner', email: 'owner@example.test' });
+    const created = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/instances',
+      headers: { cookie },
+      payload: createPayload('Acme Manufacturing'),
+    });
+    const instance = created.json().instance;
+    await ctx.store.updateInstance(instance.id, { status: 'ready' });
+
+    const added = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/instances/${instance.id}/domains`,
+      headers: { cookie },
+      payload: { domain: 'erp.acme.com' },
+    });
+
+    expect(added.statusCode).toBe(201);
+    expect(added.json().dnsRouting.cnameTarget).toBe(instance.hostname);
+    expect(added.json().dnsVerification.txtName).toBe('_erpnext-verification.erp.acme.com');
+  });
+});

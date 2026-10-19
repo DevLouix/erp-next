@@ -97,38 +97,92 @@ and use strategy 2. Ask if you want manifests scaffolded.
 
 ## Custom domains for tenant sites
 
-Tenant custom domains require coordinated DNS ownership proof, a Frappe site
-alias, a Dokploy/Traefik host route, and a certificate. The platform handles the
-first two steps: an owner adds a domain to a ready instance, publishes its
-per-domain TXT token, and verifies it. The worker then uses Bench's
-`setup add-domain` command and probes Frappe with the custom Host header.
-Unverified hostnames are not added to Frappe.
+The Dokploy deployment automates tenant routing without the Dokploy API by
+using Traefik's file provider. The platform worker writes one exact-host router
+configuration into a shared Docker volume; Traefik watches that directory and
+routes only verified hostnames to the fixed `frappe-frontend:8080` upstream.
+The route uses the configured ACME resolver for HTTPS. There is no catch-all
+tenant router and no Docker socket access for the platform.
 
-After the instance panel reports the Frappe alias is configured:
+### One-time Dokploy Traefik setup
 
-1. Point the custom hostname to the instance's assigned hostname: use a CNAME
-   for a subdomain; for an apex/root domain, use the DNS provider's
-   ALIAS/ANAME or CNAME-flattening feature, or point an A/AAAA record at the
-   ingress.
-2. In the Dokploy Compose app's **Domains** tab, add the hostname and select
-   `frappe-frontend` on port `8080`. Enable HTTPS with a certificate resolver.
-   Dokploy generates the Traefik route; keep the original Host header intact.
-3. Test the exact `https://` hostname after DNS propagation and certificate
-   issuance. The platform's `active` status confirms Frappe alias setup, not
-   external proxy/TLS readiness.
+The Compose overlay creates the named Docker volume
+`erpnext-custom-domain-routes` and mounts it into `platform-worker` at
+`/var/lib/erpnext/custom-domain-routes`. Configure the Dokploy Traefik service
+once to mount the same volume read-only and watch the mount as a file-provider
+directory. For example, add this volume to Traefik's service:
 
-Use a certificate valid for the custom hostname. The platform wildcard
-certificate only covers its own `PROVISIONING_BASE_DOMAIN`. Traefik must be
-reachable on port 80 for HTTP-01; use DNS-01 when that is unavailable or when
-requesting a wildcard certificate. Persist Traefik's ACME storage and monitor
-renewal errors. Dokploy routing and certificate lifecycle are managed in
-Dokploy, not by the platform application.
+```yaml
+services:
+  traefik:
+    volumes:
+      - erpnext-custom-domain-routes:/etc/traefik/dynamic/custom-domains:ro
 
-For safe removal, first remove the custom host route from Dokploy and its DNS
-record, then remove the domain in the instance panel. The worker removes the
-Frappe alias; the platform blocks instance deletion while a custom hostname is
-still attached. This avoids leaving an unassigned hostname routed to Frappe's
-default site.
+volumes:
+  erpnext-custom-domain-routes:
+    external: true
+    name: erpnext-custom-domain-routes
+```
+
+Enable the file provider in Traefik's **static** configuration (not inside the
+dynamic route files):
+
+```yaml
+providers:
+  file:
+    directory: /etc/traefik/dynamic/custom-domains
+    watch: true
+```
+
+Merge these settings into the existing Traefik service/configuration; do not
+replace its Docker provider, entrypoints, or existing routers. Restart Traefik
+once after changing the static config and volume mount. In the platform
+environment, set `CUSTOM_DOMAIN_INGRESS_MODE=traefik-file` and set
+`CUSTOM_DOMAIN_CERT_RESOLVER` to the name of a configured Traefik ACME resolver.
+The default `letsencrypt` is correct only if that resolver exists.
+
+Keep Traefik's ACME storage persistent and reachable on ports 80/443. HTTP-01
+works for a non-wildcard hostname when public port 80 reaches Traefik; a
+configured DNS-01 resolver is also suitable. The worker publishes routers on
+`web` and `websecure` by default; set `CUSTOM_DOMAIN_HTTP_ENTRYPOINT` and
+`CUSTOM_DOMAIN_HTTPS_ENTRYPOINT` if your entrypoints use different names.
+Ensure Traefik and `frappe-frontend` share the Dokploy network so the fixed
+upstream URL `http://frappe-frontend:8080` resolves. The worker volume is
+read/write; Traefik's mount must be read-only.
+Use a single Traefik ACME writer unless certificate storage is provided by a
+purpose-built shared certificate service; multiple Traefik replicas must not
+race on one local ACME storage file.
+
+### Tenant onboarding and removal
+
+1. The owner adds a domain in the instance panel. The panel displays a
+   per-domain TXT ownership proof and a CNAME target.
+2. The owner adds both records in their DNS provider. A subdomain should use
+   the displayed CNAME to the assigned instance hostname. For an apex/root
+   domain, use the provider's ALIAS/ANAME/CNAME-flattening feature or an A/AAAA
+   record matching the ingress IPs (look them up from the assigned hostname).
+   Set the DNS record to DNS-only rather than proxying it through a CDN during
+   verification; the platform checks it resolves to the same ingress as the
+   assigned hostname. DNS automation for arbitrary customer zones requires
+   each customer to delegate DNS access; this platform does not
+   collect their DNS-provider credentials.
+3. After records propagate, the owner verifies the TXT record. Only then does
+   the worker run Bench's `setup add-domain`, health-check Frappe using the
+   custom Host header, and publish the exact-host Traefik route. Traefik
+   requests the HTTPS certificate automatically.
+4. Once DNS and certificate issuance finish, the custom hostname serves the
+   same Frappe site and its website/login pages. `active` means the Frappe alias
+   and ingress route were installed; certificate issuance may take additional
+   time.
+
+To disconnect, use **Remove custom domain**. The worker removes the route first,
+then removes the Frappe alias. Remove the hostname's DNS record after the panel
+confirms removal. Instance deletion remains blocked while a custom domain is
+attached.
+
+The route directory is control-plane input: limit write access to the platform
+worker and mount it read-only into Traefik. Do not make it writable by tenant
+containers or expose the Traefik API publicly.
 
 References: [Frappe Bench `add-domain`/`remove-domain`](https://github.com/frappe/bench/blob/develop/bench/commands/setup.py),
 [Dokploy Compose domains](https://docs.dokploy.com/docs/core/docker-compose/domains),

@@ -8,7 +8,8 @@
 # (Docker Compose honors it) or point the Compose Path at the combined command
 # your version supports. Requires Docker Compose v2.24+ for the `!reset` tag.
 #
-# Provides two Traefik routers:
+# Provides the platform/API and wildcard tenant-site routers. Custom tenant
+# hostnames are loaded separately by Traefik's watched file provider:
 #   - erpnext-api    -> platform-api:3000   on  Host(${PUBLIC_HOST})
 #   - erpnext-sites  -> frappe-frontend:8080 on  Host(*.${PROVISIONING_BASE_DOMAIN})
 # The sites router requests a WILDCARD cert, so the resolver below MUST use the
@@ -16,6 +17,8 @@
 
 services:
   platform-api:
+    environment:
+      CUSTOM_DOMAIN_INGRESS_MODE: ${CUSTOM_DOMAIN_INGRESS_MODE:-traefik-file}
     # Dokploy routes via Traefik; don't bind host ports.
     ports: !reset []
     networks: [erpnext, dokploy-network]
@@ -26,6 +29,14 @@ services:
       - "traefik.http.routers.erpnext-api.entrypoints=websecure"
       - "traefik.http.routers.erpnext-api.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.erpnext-api.loadbalancer.server.port=3000"
+
+  platform-worker:
+    environment:
+      CUSTOM_DOMAIN_INGRESS_MODE: ${CUSTOM_DOMAIN_INGRESS_MODE:-traefik-file}
+      CUSTOM_DOMAIN_UPSTREAM_URL: ${CUSTOM_DOMAIN_UPSTREAM_URL:-http://frappe-frontend:8080}
+      CUSTOM_DOMAIN_CERT_RESOLVER: ${CUSTOM_DOMAIN_CERT_RESOLVER:-letsencrypt}
+      CUSTOM_DOMAIN_HTTP_ENTRYPOINT: ${CUSTOM_DOMAIN_HTTP_ENTRYPOINT:-web}
+      CUSTOM_DOMAIN_HTTPS_ENTRYPOINT: ${CUSTOM_DOMAIN_HTTPS_ENTRYPOINT:-websecure}
 
   frappe-frontend:
     ports: !reset []

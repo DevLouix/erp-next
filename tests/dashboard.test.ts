@@ -148,6 +148,8 @@ describe('dashboard presentation', () => {
         const instance = await ctx.store.findInstanceByCustomDomain('erp.acme.com');
         return [[`erpnext-domain-verification=${instance?.customDomainVerificationToken}`]];
       },
+      resolve4: async () => ['203.0.113.25'],
+      resolve6: async () => [],
     });
     const { cookie } = await loginAs(ctx, { sub: 'owner', email: 'owner@example.test' });
     const created = await ctx.app.inject({
@@ -177,7 +179,8 @@ describe('dashboard presentation', () => {
       headers: { cookie },
     });
     expect(detail.body).toContain(`_erpnext-verification.erp.acme.com`);
-    expect(detail.body).toContain('before any traffic is routed');
+    expect(detail.body).toContain('CNAME record (for subdomains)');
+    expect(detail.body).toContain('install the exact-host Traefik route');
 
     const verified = await ctx.app.inject({
       method: 'POST',

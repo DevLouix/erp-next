@@ -85,6 +85,9 @@ export function registerInstanceRoutes(
         txtName: `_erpnext-verification.${instance.customDomain}`,
         txtValue: `erpnext-domain-verification=${instance.customDomainVerificationToken}`,
       },
+      dnsRouting: {
+        cnameTarget: instance.hostname,
+      },
     });
   });
 

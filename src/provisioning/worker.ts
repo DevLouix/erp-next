@@ -5,6 +5,7 @@ import type { Logger } from '../lib/logger.js';
 import { consoleLogger } from '../lib/logger.js';
 import { redact } from './commands.js';
 import { decryptCredential } from '../admin/credentialEncryption.js';
+import type { DomainIngress } from './domainIngress.js';
 
 /** The Bench operations the worker needs. `BenchClient` implements this. */
 export interface ProvisioningBench {
@@ -44,6 +45,7 @@ export interface WorkerDeps {
   config: AppConfig;
   bench: ProvisioningBench;
   health: HealthWaiter;
+  domainIngress?: DomainIngress;
   logger?: Logger;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
@@ -264,16 +266,24 @@ export class ProvisioningWorker {
     const domain = instance.customDomain;
     const log = { jobId: job.id, instanceId: instance.id, hostname: instance.hostname, domain, attempt: job.attempts };
     try {
+      if (!this.deps.domainIngress) {
+        throw new Error('Custom-domain ingress is not configured; enable the Traefik file-provider integration');
+      }
       if (!domain || (!isRemoval && instance.customDomainStatus !== 'configuring')) {
         throw new Error('Custom domain operation is missing its pending domain');
       }
       if (isRemoval) {
+        await this.deps.domainIngress.remove(domain);
         await this.deps.bench.removeDomain(instance.siteName, domain);
+        if (!(await this.isJobRunning(job))) return 'skipped';
       } else {
         await this.deps.bench.addDomain(instance.siteName, domain);
+        await this.deps.health.waitForHealthy(domain);
+        if (!(await this.isJobRunning(job))) return 'skipped';
+        await this.deps.domainIngress.configure(domain);
       }
       if (!(await this.isJobRunning(job))) return 'skipped';
-      await this.deps.health.waitForHealthy(isRemoval ? instance.hostname : domain);
+      if (isRemoval) await this.deps.health.waitForHealthy(instance.hostname);
       const completed = await this.deps.store.completeCustomDomainJob(
         job.id,
         instance.id,

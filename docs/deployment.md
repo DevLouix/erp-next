@@ -99,40 +99,49 @@ and use strategy 2. Ask if you want manifests scaffolded.
 
 The Dokploy deployment automates tenant routing without the Dokploy API by
 using Traefik's file provider. The platform worker writes one exact-host router
-configuration into a shared Docker volume; Traefik watches that directory and
-routes only verified hostnames to the fixed `frappe-frontend:8080` upstream.
+configuration into Dokploy's existing watched dynamic directory; Traefik watches
+that directory and routes only verified hostnames to the fixed
+`frappe-frontend:8080` upstream.
 The route uses the configured ACME resolver for HTTPS. There is no catch-all
 tenant router and no Docker socket access for the platform.
 
 ### One-time Dokploy Traefik setup
 
-The Compose overlay creates the named Docker volume
-`erpnext-custom-domain-routes` and mounts it into `platform-worker` at
-`/var/lib/erpnext/custom-domain-routes`. Configure the Dokploy Traefik service
-once to mount the same volume read-only and watch the mount as a file-provider
-directory. For example, add this volume to Traefik's service:
+On the VPS, create the existing dynamic directory and allow UID/GID `1000:0`
+to write route files. The exact ownership may depend on the worker image:
+
+```bash
+mkdir -p /etc/dokploy/traefik/dynamic
+chown -R 1000:0 /etc/dokploy/traefik/dynamic
+chmod 2770 /etc/dokploy/traefik/dynamic
+```
+
+The Dokploy overlay bind-mounts that directory read-write into the worker at
+`/var/lib/erpnext/custom-domain-routes`. Configure the existing Traefik service
+to mount the same host directory read-only and preserve its current Docker
+provider:
 
 ```yaml
 services:
   traefik:
     volumes:
-      - erpnext-custom-domain-routes:/etc/traefik/dynamic/custom-domains:ro
-
-volumes:
-  erpnext-custom-domain-routes:
-    external: true
-    name: erpnext-custom-domain-routes
+      - /etc/dokploy/traefik/dynamic:/etc/dokploy/traefik/dynamic:ro
 ```
 
-Enable the file provider in Traefik's **static** configuration (not inside the
-dynamic route files):
+Enable the existing file provider to watch this directory:
 
 ```yaml
 providers:
   file:
-    directory: /etc/traefik/dynamic/custom-domains
+    directory: /etc/dokploy/traefik/dynamic
     watch: true
 ```
+
+> Security note: this integration gives the platform worker write access to
+> Dokploy's entire dynamic directory. Keep only trusted route files in that
+> directory and restrict host/container access to this directory. The
+> application only creates or removes filenames prefixed
+> `custom-domain-<sha256>.yml`; existing Dokploy configuration is not modified.
 
 Merge these settings into the existing Traefik service/configuration; do not
 replace its Docker provider, entrypoints, or existing routers. Restart Traefik

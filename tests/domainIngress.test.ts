@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -39,12 +39,14 @@ describe('Traefik file ingress', () => {
 
   it('updates an existing route atomically and removes only that hostname', async () => {
     const ingress = await makeIngress();
+    await writeFile(join(directories[0]!, 'dokploy-existing.yml'), 'http: {}\n');
     await ingress.configure('erp.acme.com');
     await ingress.configure('erp.acme.com');
-    expect(await readdir(directories[0]!)).toHaveLength(1);
+    expect(await readdir(directories[0]!)).toHaveLength(2);
+    expect(await readFile(join(directories[0]!, 'dokploy-existing.yml'), 'utf8')).toBe('http: {}\n');
 
     await ingress.remove('erp.acme.com');
-    expect(await readdir(directories[0]!)).toHaveLength(0);
+    expect(await readdir(directories[0]!)).toEqual(['dokploy-existing.yml']);
   });
 
   it('rejects non-normalized hostnames and unsafe ingress configuration', async () => {

@@ -48,14 +48,15 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=${DOKPLOY_NETWORK:-dokploy-network}"
-      - "traefik.http.routers.erpnext-sites.rule=Host(`*.${PROVISIONING_BASE_DOMAIN}`)"
+      - "traefik.http.routers.erpnext-sites.rule=Host(`${PROVISIONING_BASE_DOMAIN}`) || Host(`*.${PROVISIONING_BASE_DOMAIN}`)"
       - "traefik.http.routers.erpnext-sites.entrypoints=websecure"
       - "traefik.http.routers.erpnext-sites.tls=true"
-      - "traefik.http.routers.erpnext-sites.tls.certresolver=${TRAEFIK_WILDCARD_CERTRESOLVER:-spaceship}"
       - "traefik.http.routers.erpnext-sites.service=erpnext-sites"
-      # These two lines make Traefik request one wildcard certificate.
-      - "traefik.http.routers.erpnext-sites.tls.domains[0].main=${PROVISIONING_BASE_DOMAIN}"
-      - "traefik.http.routers.erpnext-sites.tls.domains[0].sans=*.${PROVISIONING_BASE_DOMAIN}"
+      - "traefik.http.routers.erpnext-sites-http.rule=Host(`${PROVISIONING_BASE_DOMAIN}`) || Host(`*.${PROVISIONING_BASE_DOMAIN}`)"
+      - "traefik.http.routers.erpnext-sites-http.entrypoints=web"
+      - "traefik.http.routers.erpnext-sites-http.middlewares=erpnext-sites-https"
+      - "traefik.http.routers.erpnext-sites-http.service=erpnext-sites"
+      - "traefik.http.middlewares.erpnext-sites-https.redirectscheme.scheme=https"
       - "traefik.http.services.erpnext-sites.loadbalancer.server.port=8080"
 
   # The platform database is internal to the stack; no host port needed.

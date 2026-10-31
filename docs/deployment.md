@@ -171,11 +171,14 @@ explicit root-zone override.
 ```bash
 mkdir -p /etc/dokploy/acme.sh /etc/dokploy/traefik/certs
 
+export SPACESHIP_API_KEY='your-api-key'
+export SPACESHIP_API_SECRET='your-api-secret'
+
 docker run -d \
   --name acme-sh \
   --restart unless-stopped \
-  -e SPACESHIP_API_KEY \
-  -e SPACESHIP_API_SECRET \
+  -e SPACESHIP_API_KEY="$SPACESHIP_API_KEY" \
+  -e SPACESHIP_API_SECRET="$SPACESHIP_API_SECRET" \
   -e SPACESHIP_ROOT_DOMAIN=devlouix.com \
   -v /etc/dokploy/acme.sh:/acme.sh \
   -v /etc/dokploy/traefik/certs:/certs \
@@ -185,8 +188,10 @@ docker exec acme-sh --issue \
   --dns dns_spaceship \
   -d erpsite.devlouix.com \
   -d '*.erpsite.devlouix.com' \
-  --dnssleep 30 \
-  --install-cert \
+  --dnssleep 30
+
+docker exec acme-sh --install-cert \
+  -d erpsite.devlouix.com \
   --cert-file /certs/erpsite.crt \
   --key-file /certs/erpsite.key \
   --fullchain-file /certs/erpsite.fullchain.crt

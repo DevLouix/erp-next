@@ -188,10 +188,24 @@ docker exec acme-sh --issue \
   --dns dns_spaceship \
   -d erpsite.devlouix.com \
   -d '*.erpsite.devlouix.com' \
-  --dnssleep 30
+  --dnssleep 30 \
+  --keylength ec-256
 
 docker exec acme-sh --install-cert \
   -d erpsite.devlouix.com \
+  --ecc \
+  --cert-file /certs/erpsite.crt \
+  --key-file /certs/erpsite.key \
+  --fullchain-file /certs/erpsite.fullchain.crt
+```
+
+The `--ecc` flag identifies `acme.sh`'s ECC certificate directory, which uses
+the `_ecc` suffix. If the certificate was issued before the guide was updated,
+locate its storage directory first:
+
+```bash
+docker exec acme-sh find /acme.sh -maxdepth 1 -type d -name '*erpsite*'
+docker exec acme-sh --install-cert -d erpsite.devlouix.com --ecc \
   --cert-file /certs/erpsite.crt \
   --key-file /certs/erpsite.key \
   --fullchain-file /certs/erpsite.fullchain.crt

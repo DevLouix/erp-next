@@ -50,7 +50,8 @@ services:
       - "traefik.docker.network=${DOKPLOY_NETWORK:-dokploy-network}"
       - "traefik.http.routers.erpnext-sites.rule=Host(`*.${PROVISIONING_BASE_DOMAIN}`)"
       - "traefik.http.routers.erpnext-sites.entrypoints=websecure"
-      - "traefik.http.routers.erpnext-sites.tls.certresolver=${TRAEFIK_WILDCARD_CERTRESOLVER:-letsencrypt-dns}"
+      - "traefik.http.routers.erpnext-sites.tls=true"
+      - "traefik.http.routers.erpnext-sites.tls.certresolver=${TRAEFIK_WILDCARD_CERTRESOLVER:-spaceship}"
       - "traefik.http.routers.erpnext-sites.service=erpnext-sites"
       # These two lines make Traefik request one wildcard certificate.
       - "traefik.http.routers.erpnext-sites.tls.domains[0].main=${PROVISIONING_BASE_DOMAIN}"

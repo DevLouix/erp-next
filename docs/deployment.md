@@ -216,11 +216,18 @@ Define the installed certificate in `/etc/dokploy/traefik/dynamic/erpsite-certif
 ```yaml
 tls:
   certificates:
-    - certFile: /certs/erpsite.fullchain.crt
-      keyFile: /certs/erpsite.key
+    - certFile: /etc/dokploy/traefik/certs/erpsite.fullchain.crt
+      keyFile: /etc/dokploy/traefik/certs/erpsite.key
 ```
 
-Mount `/etc/dokploy/traefik/certs` read-only into Traefik at `/certs`. The
+Mount `/etc/dokploy/traefik/certs` read-only into Traefik at the same container
+path:
+
+```yaml
+- /etc/dokploy/traefik/certs:/etc/dokploy/traefik/certs:ro
+```
+
+The
 `acme.sh` container schedules renewals; its configured `--install-cert` paths
 replace the mounted files automatically. Restrict both credential variables
 and `/etc/dokploy/acme.sh`; they contain Spaceship credentials and account

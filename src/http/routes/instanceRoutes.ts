@@ -56,16 +56,6 @@ export function registerInstanceRoutes(
     reply.code(201).send({ instance: serializeInstance(instance, config) });
   });
 
-  app.get('/api/instances/:id/credentials', { preHandler: requireAuth }, async (request, reply) => {
-    const { user } = getAuth(request);
-    const { id } = request.params as { id: string };
-    const credentials = await instanceService.loginCredentialsFor(user, id);
-    reply
-      .header('cache-control', 'no-store, private')
-      .header('pragma', 'no-cache')
-      .send({ credentials });
-  });
-
   app.post('/api/instances/:id/credentials', { preHandler: requireAuth }, async (request, reply) => {
     const { user } = getAuth(request);
     const { id } = request.params as { id: string };

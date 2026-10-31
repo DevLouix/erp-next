@@ -9,5 +9,14 @@ export function statusClass(status: InstanceStatus): 'ready' | 'failed' | 'pendi
 }
 
 export function statusBadge(status: InstanceStatus): string {
-  return `<span class="badge ${statusClass(status)}">${status}</span>`;
+  const labels: Record<InstanceStatus, string> = {
+    queued: 'Queued',
+    provisioning: 'Provisioning',
+    installing: 'Installing',
+    configuring: 'Configuring',
+    ready: 'Ready',
+    failed: 'Needs attention',
+    deleting: 'Deleting',
+  };
+  return `<span class="badge ${statusClass(status)}">${labels[status]}</span>`;
 }

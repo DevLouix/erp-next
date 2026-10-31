@@ -98,7 +98,8 @@ describe('dashboard presentation', () => {
     });
     expect(detail.body).toContain('ERPNext login');
     expect(detail.body).toContain('Administrator');
-    expect(detail.body).toContain('Show saved password');
+    expect(detail.body).toContain('change the password below');
+    expect(detail.body).not.toContain('Show saved password');
     expect(detail.body).toContain('Change password');
     expect(detail.body).not.toContain('secure-test-password');
 

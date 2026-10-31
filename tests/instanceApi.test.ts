@@ -77,18 +77,6 @@ describe('POST /api/instances', () => {
     });
     expect(denied.statusCode).toBe(404);
 
-    const recovered = await ctx.app.inject({
-      method: 'GET',
-      url: `/api/instances/${instance.id}/credentials`,
-      headers: { cookie: owner.cookie },
-    });
-    expect(recovered.statusCode).toBe(200);
-    expect(recovered.headers['cache-control']).toContain('no-store');
-    expect(recovered.json().credentials).toEqual({
-      username: 'Administrator',
-      password: 'secure-test-password',
-    });
-
     const changed = await ctx.app.inject({
       method: 'POST',
       url: `/api/instances/${instance.id}/credentials`,

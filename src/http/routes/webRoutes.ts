@@ -113,7 +113,7 @@ function layout(title: string, body: string, user?: User | null): string {
       --surface-raised: #f0eee8;
       --line: #e8e5dd;
       --text: #292a26;
-      --muted: #828178;
+      --muted: #696b63;
       --accent: #526b56;
       --accent-strong: #3d5843;
       --accent-soft: #e9efe8;
@@ -308,6 +308,10 @@ function layout(title: string, body: string, user?: User | null): string {
     .err-text { color: var(--danger); font-size: .84rem; }
     .warning { border-color: #dfcda9; background: #fbf7ed; }
     .danger-zone { border-color: color-mix(in srgb, var(--danger), var(--line) 58%); }
+    dialog.confirm-dialog { width: min(92vw, 440px); border: 1px solid var(--line); border-radius: 18px; padding: 0; color: var(--text); background: var(--surface); box-shadow: 0 24px 80px rgb(0 0 0 / 28%); }
+    dialog.confirm-dialog::backdrop { background: rgb(15 16 14 / 58%); backdrop-filter: blur(2px); }
+    dialog.confirm-dialog .confirm-content { padding: 1.25rem; }
+    dialog.confirm-dialog .confirm-actions { display: flex; justify-content: flex-end; gap: .65rem; margin-top: 1.25rem; }
     .actions { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
     .hostname-link { display: inline-flex; align-items: center; gap: .35rem; color: var(--accent-strong); text-decoration: none; white-space: nowrap; }
     .hostname-link:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
@@ -316,6 +320,13 @@ function layout(title: string, body: string, user?: User | null): string {
     a.manage-link:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); text-decoration: none; }
     button:disabled { cursor: not-allowed; opacity: .48; transform: none !important; box-shadow: none !important; }
     .metric { display: inline-flex; align-items: baseline; gap: .35rem; border: 1px solid var(--line); border-radius: 999px; padding: .4rem .8rem; background: var(--surface); color: var(--muted); font-size: .78rem; box-shadow: var(--shadow); }
+    .instance-cards { display: none; }
+    .instance-card { display: grid; gap: .85rem; }
+    .instance-card-top { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
+    .instance-card-name { font-weight: 650; }
+    .operation-progress { border-left: 3px solid var(--accent); }
+    .operation-progress.failed { border-left-color: var(--danger); }
+    .operation-progress h3 { margin-bottom: .35rem; }
     pre { overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 1rem; background: var(--bg); color: var(--text); font-size: .78rem; }
     :root[data-theme="dark"] .badge.ready { border-color: #3e5841; background: #29392c; color: #b9d0b8; }
     :root[data-theme="dark"] .badge.failed { border-color: #65423d; background: #422e2a; color: #efb7ad; }
@@ -332,6 +343,9 @@ function layout(title: string, body: string, user?: User | null): string {
       form.row > div, .password-group { flex-basis: 100%; }
       form.row > button { width: 100%; }
       th, td { padding: .7rem .55rem; }
+      .table-wrap.instances-table { display: none; }
+      .instance-cards { display: grid; gap: .75rem; }
+      .instance-cards .card { margin-bottom: 0; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
@@ -357,6 +371,16 @@ function layout(title: string, body: string, user?: User | null): string {
     ${nav}
   </header>
   <main>${body}</main>
+  <dialog class="confirm-dialog" data-confirm-dialog aria-labelledby="confirmDialogTitle">
+    <div class="confirm-content">
+      <h2 id="confirmDialogTitle">Confirm action</h2>
+      <p data-confirm-message class="muted"></p>
+      <div class="confirm-actions">
+        <button type="button" class="action secondary" data-confirm-cancel>Cancel</button>
+        <button type="button" class="action danger" data-confirm-submit>Confirm</button>
+      </div>
+    </div>
+  </dialog>
   <script>
     (function () {
       var button = document.querySelector('[data-theme-toggle]');
@@ -374,6 +398,43 @@ function layout(title: string, body: string, user?: User | null): string {
         button.setAttribute('title', 'Switch to ' + (theme === 'dark' ? 'light' : 'dark') + ' theme');
         button.setAttribute('aria-pressed', String(theme === 'light'));
       });
+      document.querySelectorAll('form').forEach(function (form) {
+        form.addEventListener('submit', function () {
+          if (form.dataset.submitting === 'true') return;
+          form.dataset.submitting = 'true';
+          form.querySelectorAll('button[type="submit"]').forEach(function (button) {
+            button.disabled = true;
+            button.dataset.originalLabel = button.textContent || '';
+            button.textContent = 'Working...';
+          });
+        });
+      });
+      var confirmDialog = document.querySelector('[data-confirm-dialog]');
+      if (confirmDialog) {
+        var confirmForm = null;
+        document.querySelectorAll('form[data-confirm]').forEach(function (form) {
+          form.addEventListener('submit', function (event) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            confirmForm = form;
+            confirmDialog.querySelector('[data-confirm-message]').textContent = form.dataset.confirm;
+            confirmDialog.querySelector('[data-confirm-submit]').textContent = form.dataset.confirmLabel || 'Confirm';
+            confirmDialog.showModal();
+          }, true);
+        });
+        confirmDialog.querySelector('[data-confirm-cancel]').addEventListener('click', function () {
+          confirmForm = null;
+          confirmDialog.close();
+        });
+        confirmDialog.querySelector('[data-confirm-submit]').addEventListener('click', function () {
+          var pendingForm = confirmForm;
+          confirmDialog.close();
+          if (pendingForm) {
+            confirmForm = null;
+            pendingForm.submit();
+          }
+        });
+      }
     })();
   </script>
   <script>
@@ -534,6 +595,20 @@ function instanceRow(instance: Instance): string {
   </tr>`;
 }
 
+function instanceCard(instance: Instance): string {
+  return `<article class="card instance-card">
+    <div class="instance-card-top">
+      <div>
+        <div class="instance-card-name">${escapeHtml(instance.companyName)}</div>
+        ${hostnameLink(instance.hostname)}
+      </div>
+      ${statusBadge(instance.status)}
+    </div>
+    <p class="muted">Created ${instance.createdAt.toISOString()}</p>
+    <a class="manage-link" href="/dashboard/instances/${encodeURIComponent(instance.id)}">Manage workspace</a>
+  </article>`;
+}
+
 export function registerWebRoutes(
   app: FastifyInstance,
   deps: {
@@ -611,10 +686,11 @@ export function registerWebRoutes(
       </div>
       <div class="card">
         <h2>Your instances</h2>
-        <div class="table-wrap"><table>
+        <div class="table-wrap instances-table"><table>
           <thead><tr><th>Workspace</th><th>Hostname</th><th>Status</th><th>Created</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table></div>
+        <div class="instance-cards">${instances.length ? instances.map(instanceCard).join('') : '<p class="muted">No instances yet.</p>'}</div>
       </div>`;
     const backupCard = `
       <div class="card">
@@ -685,7 +761,7 @@ export function registerWebRoutes(
       (function poll(){
         fetch('/api/instances/${encodeURIComponent(instance.id)}', { headers: { 'Accept': 'application/json' } })
           .then(r => r.ok ? r.json() : null)
-          .then(d => { if (d && (d.instance.status === 'ready' || d.instance.status === 'failed')) { location.reload(); } else { setTimeout(poll, 3000); } })
+          .then(d => { if (d) { location.reload(); } else { setTimeout(poll, 5000); } })
           .catch(() => setTimeout(poll, 3000));
       })();
       </script>`
@@ -730,7 +806,7 @@ export function registerWebRoutes(
                       <form method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/domains/verify">
                         <button class="action" type="submit">Verify DNS &amp; configure site</button>
                       </form>
-                      <form method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/domains/remove" onsubmit="return confirm('Remove this custom domain?')">
+                      <form method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/domains/remove" data-confirm="Remove this custom domain?" data-confirm-label="Remove domain">
                         <button class="action secondary" type="submit">Cancel</button>
                       </form>
                     </div>`
@@ -743,7 +819,7 @@ export function registerWebRoutes(
                   ? `<p>Frappe and the ingress route are configured. Traefik will obtain and renew the HTTPS certificate automatically; allow a short time for issuance.</p>
                     <p><a class="primary" href="https://${escapeHtml(instance.customDomain)}" target="_blank" rel="noopener noreferrer">Open custom domain</a></p>
                     <p class="muted">To disconnect, remove the hostname here first. The platform removes its ingress route and Frappe alias; then remove the hostname's DNS record.</p>
-                    <form method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/domains/remove" onsubmit="return confirm('Remove this custom domain from the workspace?')">
+                    <form method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/domains/remove" data-confirm="Remove this custom domain from the workspace?" data-confirm-label="Remove domain">
                       <button class="action secondary" type="submit">Remove custom domain</button>
                     </form>`
                   : instance.customDomainStatus === 'removing'
@@ -766,9 +842,8 @@ export function registerWebRoutes(
         <p>Sign in at your workspace using username <strong>Administrator</strong>.</p>
         ${
           hasLoginCredentials
-            ? `<p><button class="action secondary" type="button" id="showCredentials">Show saved password</button></p>
-              <div id="credentialResult" class="muted" aria-live="polite"></div>`
-            : '<p class="muted">No recoverable password is stored for this site yet. Set a new password below to regain managed access.</p>'
+            ? '<p class="muted">A recoverable copy is stored securely. You can change the password below if the current one is unavailable.</p>'
+            : '<p class="muted">No recoverable password is stored for this site yet. Set a new password below to establish managed recovery.</p>'
         }
         ${
           credentialChangePending
@@ -791,38 +866,6 @@ export function registerWebRoutes(
           <button class="action" type="submit" ${credentialChangePending ? 'disabled' : ''}>${hasLoginCredentials ? 'Change password' : 'Set password'}</button>
         </form>
         <p class="muted">Passwords are encrypted in platform storage. A password change is applied by the worker and remains pending until successful. If you change the password directly in ERPNext, its one-way hash cannot be recovered here; update it through this panel to keep recovery in sync.</p>
-        ${
-          hasLoginCredentials
-            ? `<script>
-              (function () {
-                var button = document.getElementById('showCredentials');
-                var output = document.getElementById('credentialResult');
-                var revealed = false;
-                button.addEventListener('click', function () {
-                  if (revealed) {
-                    output.textContent = '';
-                    button.textContent = 'Show saved password';
-                    revealed = false;
-                    return;
-                  }
-                  button.disabled = true;
-                  fetch('/api/instances/${encodeURIComponent(instance.id)}/credentials', { credentials: 'same-origin', cache: 'no-store' })
-                    .then(function (response) {
-                      if (!response.ok) throw new Error('Could not load saved credentials.');
-                      return response.json();
-                    })
-                    .then(function (data) {
-                      output.textContent = 'Username: ' + data.credentials.username + ' · Password: ' + data.credentials.password;
-                      button.textContent = 'Hide saved password';
-                      revealed = true;
-                    })
-                    .catch(function (error) { output.textContent = error.message; })
-                    .finally(function () { button.disabled = false; });
-                });
-              })();
-            </script>`
-            : ''
-        }
       </div>`
       : '';
     const body = `
@@ -831,7 +874,7 @@ export function registerWebRoutes(
         <div><p class="muted">Workspace details</p><h2>${escapeHtml(instance.companyName)}</h2></div>
         ${urlLine}
       </div>
-      <div class="card">
+      <div class="card operation-progress ${failed ? 'failed' : ''}">
         <p class="muted">${hostnameLink(instance.hostname)} · ${escapeHtml(instance.siteName)}</p>
         <p>Status: ${statusBadge(instance.status)}</p>
         ${errorLine}
@@ -855,8 +898,8 @@ export function registerWebRoutes(
       </div>
       ${
         instance.status !== 'ready' && instance.status !== 'deleting'
-          ? `<div class="card ${retryAvailable ? 'warning' : ''}">
-        <h3>Provisioning needs attention</h3>
+          ? `<div class="card ${failed || retryAvailable ? 'warning' : 'operation-progress'}">
+        <h3>${failed || retryAvailable ? 'Provisioning needs attention' : 'Provisioning status'}</h3>
         <p>${retryAvailable
           ? 'The last provisioning attempt failed. Retry keeps your site URL but removes any partial, not-ready setup before provisioning again.'
           : failed
@@ -873,7 +916,7 @@ export function registerWebRoutes(
           ? `<div class="card warning">
         <h3>Provisioning is taking too long?</h3>
         <p>Stop this provisioning job if it appears stuck. The incomplete setup remains in place until you retry; retrying removes that partial setup before provisioning again.</p>
-        <form method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/stop" onsubmit="return confirm('Stop provisioning for ${escapeHtml(instance.hostname)}?')">
+        <form method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/stop" data-confirm="Stop provisioning for ${escapeHtml(instance.hostname)}?" data-confirm-label="Stop provisioning">
           <button class="action danger" type="submit">Stop provisioning</button>
         </form>
       </div>`
@@ -893,7 +936,7 @@ export function registerWebRoutes(
           ? `<div class="card danger-zone">
         <h3>Danger zone</h3>
         <p class="err-text">Permanent deletion removes the ERPNext site, its MariaDB database, and its uploaded files. This cannot be undone. Download a full site backup first.</p>
-        <form class="row" method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/delete" onsubmit="return confirm('This permanently deletes all ERPNext data for ${escapeHtml(instance.hostname)}. Continue?')">
+        <form class="row" method="post" action="/dashboard/instances/${encodeURIComponent(instance.id)}/delete" data-confirm="This permanently deletes all ERPNext data for ${escapeHtml(instance.hostname)}. Continue?" data-confirm-label="Delete permanently">
           <div>
             <label for="confirmSiteName">Type ${escapeHtml(instance.hostname)} to confirm</label>
             <input id="confirmSiteName" type="text" name="confirmSiteName" autocomplete="off" required>
@@ -1080,7 +1123,7 @@ export function registerWebRoutes(
           <form method="post" action="/admin/instances/${encodeURIComponent(i.id)}/retry" class="inline">
             <button class="action secondary" type="submit" ${retryAvailable ? '' : 'disabled'}>Retry</button>
           </form>
-          ${stopAvailable ? `<form method="post" action="/admin/instances/${encodeURIComponent(i.id)}/stop" class="inline" onsubmit="return confirm('Stop provisioning for ${escapeHtml(i.hostname)}?')">
+          ${stopAvailable ? `<form method="post" action="/admin/instances/${encodeURIComponent(i.id)}/stop" class="inline" data-confirm="Stop provisioning for ${escapeHtml(i.hostname)}?" data-confirm-label="Stop provisioning">
             <button class="action danger" type="submit">Stop</button>
           </form>` : ''}
         </td>

@@ -184,14 +184,14 @@ docker run -d \
   -v /etc/dokploy/traefik/certs:/certs \
   neilpang/acme.sh daemon
 
-docker exec acme-sh --issue \
+docker exec acme-sh acme.sh --issue \
   --dns dns_spaceship \
   -d erpsite.devlouix.com \
   -d '*.erpsite.devlouix.com' \
   --dnssleep 30 \
   --keylength ec-256
 
-docker exec acme-sh --install-cert \
+docker exec acme-sh acme.sh --install-cert \
   -d erpsite.devlouix.com \
   --ecc \
   --cert-file /certs/erpsite.crt \
@@ -205,7 +205,7 @@ locate its storage directory first:
 
 ```bash
 docker exec acme-sh find /acme.sh -maxdepth 1 -type d -name '*erpsite*'
-docker exec acme-sh --install-cert -d erpsite.devlouix.com --ecc \
+docker exec acme-sh acme.sh --install-cert -d erpsite.devlouix.com --ecc \
   --cert-file /certs/erpsite.crt \
   --key-file /certs/erpsite.key \
   --fullchain-file /certs/erpsite.fullchain.crt

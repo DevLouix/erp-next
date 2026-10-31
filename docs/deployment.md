@@ -162,6 +162,51 @@ Use a single Traefik ACME writer unless certificate storage is provided by a
 purpose-built shared certificate service; multiple Traefik replicas must not
 race on one local ACME storage file.
 
+### Spaceship wildcard certificates with acme.sh
+
+If Lego's Spaceship provider cannot determine the parent zone, issue the
+certificate outside Traefik with `acme.sh`. Its Spaceship hook supports an
+explicit root-zone override.
+
+```bash
+mkdir -p /etc/dokploy/acme.sh /etc/dokploy/traefik/certs
+
+docker run -d \
+  --name acme-sh \
+  --restart unless-stopped \
+  -e SPACESHIP_API_KEY \
+  -e SPACESHIP_API_SECRET \
+  -e SPACESHIP_ROOT_DOMAIN=devlouix.com \
+  -v /etc/dokploy/acme.sh:/acme.sh \
+  -v /etc/dokploy/traefik/certs:/certs \
+  neilpang/acme.sh daemon
+
+docker exec acme-sh --issue \
+  --dns dns_spaceship \
+  -d erpsite.devlouix.com \
+  -d '*.erpsite.devlouix.com' \
+  --dnssleep 30 \
+  --install-cert \
+  --cert-file /certs/erpsite.crt \
+  --key-file /certs/erpsite.key \
+  --fullchain-file /certs/erpsite.fullchain.crt
+```
+
+Define the installed certificate in `/etc/dokploy/traefik/dynamic/erpsite-certificates.yml`:
+
+```yaml
+tls:
+  certificates:
+    - certFile: /certs/erpsite.fullchain.crt
+      keyFile: /certs/erpsite.key
+```
+
+Mount `/etc/dokploy/traefik/certs` read-only into Traefik at `/certs`. The
+`acme.sh` container schedules renewals; its configured `--install-cert` paths
+replace the mounted files automatically. Restrict both credential variables
+and `/etc/dokploy/acme.sh`; they contain Spaceship credentials and account
+state.
+
 ### Tenant onboarding and removal
 
 1. The owner adds a domain in the instance panel. The panel displays a
